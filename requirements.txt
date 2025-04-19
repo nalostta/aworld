@@ -4,4 +4,3 @@ python-socketio==5.4.0
 python-engineio==4.2.1
 eventlet==0.30.2
 dnspython<2.0.0,>=1.15.0 
-werkzeug==2.0.3
