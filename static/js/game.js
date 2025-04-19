@@ -7,7 +7,12 @@ class Game {
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         this.controls = new PlayerControls();
         this.players = new Map();
-        this.socket = io();
+        this.socket = io({
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            reconnectionAttempts: 5
+        });
         this.playerName = '';
         this.playerId = null;
         this.playerMesh = null;

@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 import uuid
+import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -45,4 +46,5 @@ def handle_player_move(data):
         }, broadcast=True)
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5001) 
+    port = int(os.environ.get('PORT', 5001))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False) 
