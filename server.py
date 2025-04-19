@@ -1,0 +1,48 @@
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit
+import uuid
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret!'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# Store active players
+players = {}
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    if request.sid in players:
+        del players[request.sid]
+        emit('player_disconnected', {'id': request.sid}, broadcast=True)
+
+@socketio.on('player_join')
+def handle_player_join(data):
+    player_id = str(uuid.uuid4())
+    players[request.sid] = {
+        'id': player_id,
+        'name': data['name'],
+        'color': data['color'],
+        'position': {'x': 0, 'y': 0, 'z': 0}
+    }
+    emit('player_joined', players[request.sid], broadcast=True)
+    emit('current_players', list(players.values()))
+
+@socketio.on('player_move')
+def handle_player_move(data):
+    if request.sid in players:
+        players[request.sid]['position'] = data['position']
+        emit('player_moved', {
+            'id': players[request.sid]['id'],
+            'position': data['position']
+        }, broadcast=True)
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001) 
