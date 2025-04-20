@@ -176,6 +176,10 @@ class Game {
         this.socket.on('disconnect', (reason) => {
             console.log('Disconnected from server:', reason);
         });
+        
+        this.socket.on('chat_message', (msg) => {
+            this.showChatBubble(msg);
+        });
     }
 
     setupUI() {
@@ -202,6 +206,19 @@ class Game {
         const gameContainer = document.getElementById('game-container');
         gameContainer.addEventListener('focus', () => this.handleVisibilityChange());
         gameContainer.addEventListener('blur', () => this.handleVisibilityChange());
+
+        // Chat setup
+        this.chatForm = document.getElementById('chat-form');
+        this.chatInput = document.getElementById('chat-input');
+        this.chatInput.maxLength = 120;
+        this.chatForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = this.chatInput.value.trim();
+            if (text.length > 0) {
+                this.socket.emit('chat_message', { text, id: this.playerId, color: this.playerLabel.material.color.getHexString() });
+                this.chatInput.value = '';
+            }
+        });
     }
 
     startGame() {
@@ -351,6 +368,57 @@ class Game {
         if (this.playerMesh) {
             const pos = this.playerMesh.position;
             playerInfo.textContent = `Position: X: ${pos.x.toFixed(2)} Y: ${(pos.y - 1).toFixed(2)} Z: ${pos.z.toFixed(2)}`;
+        }
+    }
+
+    showChatBubble(msg) {
+        // Find the player mesh for the sender
+        let playerObj = null;
+        if (msg.id === this.playerId && this.playerMesh) {
+            playerObj = { mesh: this.playerMesh, label: this.playerLabel };
+        } else {
+            playerObj = this.players.get(msg.id);
+        }
+        if (playerObj && playerObj.mesh) {
+            // Remove existing bubble if present
+            if (playerObj.bubble) {
+                clearTimeout(playerObj.bubbleTimeout);
+                this.scene.remove(playerObj.bubble);
+            }
+            // Create a canvas for the chat bubble
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Draw the bubble background
+            ctx.fillStyle = 'rgba(0,0,0,0.75)';
+            ctx.strokeStyle = msg.color || '#fff';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.roundRect(10, 10, 492, 108, 32);
+            ctx.fill();
+            ctx.stroke();
+            // Draw the text
+            ctx.font = 'bold 32px Arial';
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(msg.text, 256, 64, 472);
+            // Create a texture and sprite
+            const texture = new THREE.CanvasTexture(canvas);
+            const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(3, 0.75, 1);
+            // Position above the player
+            sprite.position.set(0, 2.5, 0);
+            playerObj.mesh.add(sprite);
+            playerObj.bubble = sprite;
+            // Remove bubble after 15 seconds
+            playerObj.bubbleTimeout = setTimeout(() => {
+                playerObj.mesh.remove(sprite);
+                playerObj.bubble = null;
+            }, 15000);
         }
     }
 

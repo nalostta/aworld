@@ -31,11 +31,14 @@ class PlayerControls {
         
         // Always bind events initially
         document.addEventListener('keydown', (e) => {
+            // Only handle keys if NOT typing in an input or textarea
+            if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
             console.log("Keydown event detected:", e.key);
             this.handleKeyDown(e);
         });
         
         document.addEventListener('keyup', (e) => {
+            if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') return;
             console.log("Keyup event detected:", e.key);
             this.handleKeyUp(e);
         });

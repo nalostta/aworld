@@ -18,6 +18,13 @@
     <div id="game-container" style="display: none;">
         <div id="player-info"></div>
         <div id="debug-info"></div>
+        <div id="chat-container">
+            <div id="chat-messages"></div>
+            <form id="chat-form" autocomplete="off">
+                <input id="chat-input" type="text" maxlength="200" placeholder="Type a message..." />
+                <button type="submit">Send</button>
+            </form>
+        </div>
     </div>
 
     <!-- Three.js -->
@@ -28,4 +35,4 @@
     <script src="{{ url_for('static', filename='js/controls.js') }}"></script>
     <script src="{{ url_for('static', filename='js/game.js') }}"></script>
 </body>
-</html> 
+</html>

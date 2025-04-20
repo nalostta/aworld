@@ -45,6 +45,20 @@ def handle_player_move(data):
             'position': data['position']
         }, broadcast=True)
 
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    player = players.get(request.sid)
+    if player:
+        # Enforce 120 character limit
+        text = data['text'][:120]
+        message = {
+            'id': player['id'],
+            'name': player['name'],
+            'color': player['color'],
+            'text': text
+        }
+        emit('chat_message', message, broadcast=True)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
     socketio.run(app, host='0.0.0.0', port=port, debug=False) 
