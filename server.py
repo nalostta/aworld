@@ -8,10 +8,12 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# Store active players with position and chat info
+# Store active players with position, vertical velocity, and chat info
 players = {}
 
 CHAT_EXPIRY_SECONDS = 15
+GRAVITY = 0.02  # units per tick
+JUMP_VELOCITY = 0.25  # units per jump
 
 def prune_expired_chats():
     now = time.time()
@@ -52,6 +54,7 @@ def handle_player_join(data):
         'name': data['name'],
         'color': data['color'],
         'position': {'x': 0, 'y': 0, 'z': 0},
+        'vy': 0.0,
         'chat_message': '',
         'chat_expiry': None
     }
@@ -63,7 +66,21 @@ def handle_player_join(data):
 @socketio.on('player_move')
 def handle_player_move(data):
     if request.sid in players:
-        players[request.sid]['position'] = data['position']
+        pos = data['position']
+        player = players[request.sid]
+        # Detect jump: if y > ground and vy == 0, treat as jump
+        if pos['y'] > 0.01 and player['position']['y'] <= 0.01 and abs(player['vy']) < 1e-5:
+            player['vy'] = JUMP_VELOCITY
+        # Apply gravity
+        player['vy'] -= GRAVITY
+        # Update y position
+        new_y = player['position']['y'] + player['vy']
+        # Clamp to ground
+        if new_y <= 0:
+            new_y = 0
+            player['vy'] = 0
+        # Update position
+        player['position'] = {'x': pos['x'], 'y': new_y, 'z': pos['z']}
         broadcast_global_state()
 
 @socketio.on('chat_message')
