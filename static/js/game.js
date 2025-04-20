@@ -294,19 +294,16 @@ class Game {
     createPlayerLabel(name) {
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
-        canvas.width = 256;
-        canvas.height = 64;
-        
+        canvas.width = 192;
+        canvas.height = 40;
         // Draw background
         context.fillStyle = 'rgba(0, 0, 0, 0.5)';
         context.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw text
-        context.font = 'bold 32px Arial';
+        // Draw text (smaller font)
+        context.font = 'bold 20px Arial';
         context.textAlign = 'center';
         context.fillStyle = 'white';
-        context.fillText(name, canvas.width / 2, 42);
-        
+        context.fillText(name, canvas.width / 2, 28);
         const texture = new THREE.CanvasTexture(canvas);
         texture.minFilter = THREE.LinearFilter;
         const material = new THREE.SpriteMaterial({ 
@@ -314,8 +311,8 @@ class Game {
             transparent: true
         });
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(4, 1, 1);
-        sprite.position.y = 3;
+        sprite.scale.set(2.2, 0.45, 1); // smaller label
+        sprite.position.set(0, 2.2, 0.01); // just above head, centered
         return sprite;
     }
 
@@ -391,7 +388,7 @@ class Game {
             // Remove existing bubble if present
             if (playerObj.bubble) {
                 clearTimeout(playerObj.bubbleTimeout);
-                this.scene.remove(playerObj.bubble);
+                playerObj.mesh.remove(playerObj.bubble);
             }
             // Create a canvas for the chat bubble
             const canvas = document.createElement('canvas');
@@ -400,15 +397,15 @@ class Game {
             const ctx = canvas.getContext('2d');
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             // Draw the bubble background
-            ctx.fillStyle = 'rgba(0,0,0,0.75)';
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
             ctx.strokeStyle = msg.color || '#fff';
             ctx.lineWidth = 4;
             ctx.beginPath();
             ctx.roundRect(10, 10, 492, 108, 32);
             ctx.fill();
             ctx.stroke();
-            // Draw the text
-            ctx.font = 'bold 32px Arial';
+            // Draw the text (larger font)
+            ctx.font = 'bold 40px Arial';
             ctx.fillStyle = '#fff';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -417,9 +414,9 @@ class Game {
             const texture = new THREE.CanvasTexture(canvas);
             const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
             const sprite = new THREE.Sprite(material);
-            sprite.scale.set(3, 0.75, 1);
-            // Position above the player
-            sprite.position.set(0, 2.5, 0);
+            sprite.scale.set(3.3, 0.9, 1); // slightly larger bubble
+            // Position: right and above head
+            sprite.position.set(1.2, 2.8, 0); // right of head, above label
             playerObj.mesh.add(sprite);
             playerObj.bubble = sprite;
             // Remove bubble after 15 seconds

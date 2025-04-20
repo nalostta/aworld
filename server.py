@@ -16,13 +16,17 @@ def index():
 
 @socketio.on('connect')
 def handle_connect():
-    print('Client connected')
+    print(f'Client connected: sid={request.sid}')
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    if request.sid in players:
+    player = players.get(request.sid)
+    if player:
+        print(f"Client disconnected: sid={request.sid}, name={player['name']}")
         del players[request.sid]
-        emit('player_disconnected', {'id': request.sid}, broadcast=True)
+        emit('player_disconnected', {'id': request.sid, 'name': player['name']}, broadcast=True)
+    else:
+        print(f"Client disconnected: sid={request.sid}, name=UNKNOWN")
 
 @socketio.on('player_join')
 def handle_player_join(data):
