@@ -18,6 +18,7 @@ class Game {
         this.playerMesh = null;
         this.playerLabel = null;
         this.isActive = true; // Default to active
+        this.lastSentPos = null;
 
         // Add ambient light
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
@@ -136,9 +137,52 @@ class Game {
         // Receive the full list of current players (including after join)
         this.socket.on('current_players', (players) => {
             console.log('Received current_players:', players);
-            players.forEach(player => {
-                this.addPlayer(player);
+            const newIds = new Set(players.map(p => p.id));
+            this.players.forEach((_, id) => {
+                if (!newIds.has(id)) {
+                    this.removePlayer(id);
+                }
             });
+            players.forEach(player => {
+                if (!this.players.has(player.id)) {
+                    this.addPlayer(player);
+                }
+            });
+            this.updatePlayerCount(players.length);
+        });
+
+        this.socket.on('global_state_update', (players) => {
+            // Sync all sprites to global state
+            const newIds = new Set(players.map(p => p.id));
+            this.players.forEach((_, id) => {
+                if (!newIds.has(id)) {
+                    this.removePlayer(id);
+                }
+            });
+            players.forEach(player => {
+                // Add if missing
+                if (!this.players.has(player.id)) {
+                    this.addPlayer(player);
+                }
+                // Update position
+                const obj = this.players.get(player.id);
+                if (obj && obj.mesh) {
+                    obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+                    // Handle chat bubble
+                    if (player.chat_message && player.chat_message.length > 0) {
+                        this.showChatBubble({ id: player.id, text: player.chat_message });
+                    } else if (obj.bubble) {
+                        // Remove expired bubble
+                        obj.mesh.remove(obj.bubble);
+                        obj.bubble = null;
+                    }
+                }
+            });
+            this.updatePlayerCount(players.length);
+        });
+
+        this.socket.on('player_count_update', (data) => {
+            this.updatePlayerCount(data.count);
         });
 
         this.socket.on('player_disconnected', (data) => {
@@ -364,6 +408,13 @@ class Game {
         }
     }
 
+    updatePlayerCount(count) {
+        const countElem = document.getElementById('player-count');
+        if (countElem) {
+            countElem.textContent = `Players Online: ${count}`;
+        }
+    }
+
     showChatBubble(msg) {
         // Always use the players map to get the correct player by ID
         let playerObj = this.players.get(msg.id);
@@ -424,36 +475,44 @@ class Game {
             return;
         }
 
-        if (this.playerMesh) {
+        // Only send position if local player mesh exists
+        if (this.playerMesh && this.playerId) {
+            // Calculate movement using controls
             const movement = this.controls.update();
-            this.playerMesh.position.x += movement.x;
-            this.playerMesh.position.y = movement.y + 1;
-            this.playerMesh.position.z += movement.z;
-
-            const cameraOffset = new THREE.Vector3(0, 5, 10);
-            cameraOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.controls.cameraRotation);
-            this.camera.position.copy(this.playerMesh.position).add(cameraOffset);
-            this.camera.lookAt(this.playerMesh.position);
-
-            if (this.isActive) {
-                this.socket.emit('player_move', {
-                    position: {
-                        x: this.playerMesh.position.x,
-                        y: this.playerMesh.position.y - 1,
-                        z: this.playerMesh.position.z
-                    }
-                });
-            }
-        } else {
-            if (this.playerId) {
-                const player = this.players.get(this.playerId);
-                if (player && player.mesh) {
-                    this.playerMesh = player.mesh;
-                    this.playerLabel = player.label;
-                }
+            // Apply movement to a local variable, but don't update mesh directly
+            const newPos = {
+                x: this.playerMesh.position.x + movement.x,
+                y: this.playerMesh.position.y - 1 + movement.y, // -1 to match server
+                z: this.playerMesh.position.z + movement.z
+            };
+            // Only send if moved
+            if (!this.lastSentPos ||
+                Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||
+                Math.abs(newPos.y - this.lastSentPos.y) > 0.01 ||
+                Math.abs(newPos.z - this.lastSentPos.z) > 0.01) {
+                this.socket.emit('player_move', { position: newPos });
+                this.lastSentPos = { ...newPos };
             }
         }
 
+        // Camera tracking and rotation for local player
+        if (this.playerMesh) {
+            // Camera offset (distance and height from player)
+            const cameraDistance = 10;
+            const cameraHeight = 5;
+            const rot = this.controls.cameraRotation || 0;
+            // Spherical coordinates
+            const offsetX = Math.sin(rot) * cameraDistance;
+            const offsetZ = Math.cos(rot) * cameraDistance;
+            this.camera.position.set(
+                this.playerMesh.position.x + offsetX,
+                this.playerMesh.position.y + cameraHeight,
+                this.playerMesh.position.z + offsetZ
+            );
+            this.camera.lookAt(this.playerMesh.position);
+        }
+
+        // Do NOT update playerMesh position here; update from global state only
         this.updatePlayerInfo();
         this.renderer.render(this.scene, this.camera);
     }
