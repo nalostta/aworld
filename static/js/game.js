@@ -377,12 +377,11 @@ class Game {
     }
 
     showChatBubble(msg) {
-        // Find the player mesh for the sender
-        let playerObj = null;
-        if (msg.id === this.playerId && this.playerMesh) {
+        // Always use the players map to get the correct player by ID
+        let playerObj = this.players.get(msg.id);
+        // If this is the local player and not found in map, fallback to local mesh/label
+        if (!playerObj && msg.id === this.playerId && this.playerMesh) {
             playerObj = { mesh: this.playerMesh, label: this.playerLabel };
-        } else {
-            playerObj = this.players.get(msg.id);
         }
         if (playerObj && playerObj.mesh) {
             // Remove existing bubble if present
