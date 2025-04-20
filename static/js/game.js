@@ -208,14 +208,22 @@ class Game {
         gameContainer.addEventListener('blur', () => this.handleVisibilityChange());
 
         // Chat setup
+        this.chatMessages = document.getElementById('chat-messages');
         this.chatForm = document.getElementById('chat-form');
         this.chatInput = document.getElementById('chat-input');
         this.chatInput.maxLength = 120;
+        this.isChatFocused = false;
+        this.chatInput.addEventListener('focus', () => {
+            this.isChatFocused = true;
+        });
+        this.chatInput.addEventListener('blur', () => {
+            this.isChatFocused = false;
+        });
         this.chatForm.addEventListener('submit', (e) => {
             e.preventDefault();
             const text = this.chatInput.value.trim();
             if (text.length > 0) {
-                this.socket.emit('chat_message', { text, id: this.playerId, color: this.playerLabel.material.color.getHexString() });
+                this.socket.emit('chat_message', { text });
                 this.chatInput.value = '';
             }
         });
@@ -425,52 +433,37 @@ class Game {
     animate() {
         requestAnimationFrame(() => this.animate());
 
-        if (this.playerMesh) {
-            // Log animation frame
-            console.log("Animation frame running");
-            
-            const movement = this.controls.update();
-            
-            // Debug output for movement
-            if (movement.x !== 0 || movement.y !== 0 || movement.z !== 0) {
-                console.log("Movement applied:", movement);
-                console.log("Player position before:", this.playerMesh.position);
-            }
-            
-            // Apply movement to player mesh
-            this.playerMesh.position.x += movement.x;
-            this.playerMesh.position.y = movement.y + 1; // Keep the mesh 1 unit above the ground
-            this.playerMesh.position.z += movement.z;
-            
-            // Debug output for position after movement
-            if (movement.x !== 0 || movement.y !== 0 || movement.z !== 0) {
-                console.log("Player position after:", this.playerMesh.position);
-            }
+        // Prevent movement if chat is focused
+        if (this.isChatFocused) {
+            this.updatePlayerInfo();
+            this.renderer.render(this.scene, this.camera);
+            return;
+        }
 
-            // Update camera position
+        if (this.playerMesh) {
+            const movement = this.controls.update();
+            this.playerMesh.position.x += movement.x;
+            this.playerMesh.position.y = movement.y + 1;
+            this.playerMesh.position.z += movement.z;
+
             const cameraOffset = new THREE.Vector3(0, 5, 10);
             cameraOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), this.controls.cameraRotation);
             this.camera.position.copy(this.playerMesh.position).add(cameraOffset);
             this.camera.lookAt(this.playerMesh.position);
 
-            // Send position update to server only if active
             if (this.isActive) {
                 this.socket.emit('player_move', {
                     position: {
                         x: this.playerMesh.position.x,
-                        y: this.playerMesh.position.y - 1, // Adjust for ground offset
+                        y: this.playerMesh.position.y - 1,
                         z: this.playerMesh.position.z
                     }
                 });
             }
         } else {
-            console.log("Player mesh not available in animation loop");
-            
-            // Try to find our player in the players map
             if (this.playerId) {
                 const player = this.players.get(this.playerId);
                 if (player && player.mesh) {
-                    console.log("Found player mesh in players map, setting it as local player mesh");
                     this.playerMesh = player.mesh;
                     this.playerLabel = player.label;
                 }
