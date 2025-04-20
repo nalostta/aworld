@@ -131,52 +131,29 @@ class Game {
         this.socket.on('player_joined', (player) => {
             console.log('Player joined event received:', player);
             this.addPlayer(player);
-            
-            // Check if this is our player
-            if (player.id) {
-                console.log('Setting player ID:', player.id);
-                this.playerId = player.id;
-                
-                // If we already have a player mesh, update it
-                if (this.playerMesh) {
-                    console.log('Player mesh already exists, updating ID');
-                } else {
-                    console.log('Player mesh does not exist yet');
-                }
-            }
+        });
+
+        // Receive the full list of current players (including after join)
+        this.socket.on('current_players', (players) => {
+            console.log('Received current_players:', players);
+            players.forEach(player => {
+                this.addPlayer(player);
+            });
         });
 
         this.socket.on('player_disconnected', (data) => {
-            console.log('Player disconnected event received:', data);
             this.removePlayer(data.id);
         });
 
-        this.socket.on('player_moved', (data) => {
-            console.log('Player moved event received:', data);
-            this.updatePlayerPosition(data.id, data.position);
-        });
-
-        this.socket.on('current_players', (players) => {
-            console.log('Current players event received:', players);
-            
-            // Check if we're already in the players list
-            const existingPlayer = players.find(p => p.id === this.playerId);
-            if (existingPlayer) {
-                console.log('Found existing player in current players list:', existingPlayer);
-            }
-            
-            players.forEach(player => this.addPlayer(player));
-        });
-        
         // Add error handling
         this.socket.on('error', (error) => {
             console.error('Socket error:', error);
         });
-        
+
         this.socket.on('disconnect', (reason) => {
             console.log('Disconnected from server:', reason);
         });
-        
+
         this.socket.on('chat_message', (msg) => {
             this.showChatBubble(msg);
         });
@@ -324,6 +301,17 @@ class Game {
         const mesh = this.createPlayerMesh(playerData.color);
         const label = this.createPlayerLabel(playerData.name);
         mesh.add(label);
+
+        // Set initial position to origin (center of world)
+        let pos = { x: 0, y: 1, z: 0 };
+        if (playerData.position && typeof playerData.position.x === 'number') {
+            pos = {
+                x: playerData.position.x,
+                y: playerData.position.y + 1,
+                z: playerData.position.z
+            };
+        }
+        mesh.position.set(pos.x, pos.y, pos.z);
 
         this.scene.add(mesh);
         this.players.set(playerData.id, {

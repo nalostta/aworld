@@ -38,7 +38,8 @@ def handle_player_join(data):
         'position': {'x': 0, 'y': 0, 'z': 0}
     }
     emit('player_joined', players[request.sid], broadcast=True)
-    emit('current_players', list(players.values()))
+    # Send all current players to the newly joined client only
+    emit('current_players', list(players.values()), room=request.sid)
 
 @socketio.on('player_move')
 def handle_player_move(data):
