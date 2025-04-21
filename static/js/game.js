@@ -111,8 +111,49 @@ class Game {
 
         // Add grid with better visibility
         const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x222222);
-        gridHelper.position.y = 0.01; // Slightly above ground to prevent z-fighting
         this.scene.add(gridHelper);
+
+        // --- Cuboid Building ---
+        // Define cuboid size and position
+        this.cuboid = {
+            width: 8,
+            height: 5,
+            depth: 6,
+            x: 10,
+            y: 2.5, // half height (centered on ground)
+            z: 0
+        };
+        const cuboidGeometry = new THREE.BoxGeometry(this.cuboid.width, this.cuboid.height, this.cuboid.depth);
+        const cuboidMaterial = [
+            new THREE.MeshStandardMaterial({ color: 0x888888 }), // right
+            new THREE.MeshStandardMaterial({ color: 0x888888 }), // left
+            new THREE.MeshStandardMaterial({ color: 0xaaaaaa }), // top
+            new THREE.MeshStandardMaterial({ color: 0x666666 }), // bottom
+            new THREE.MeshStandardMaterial({ color: 0xffffff }), // front (display wall)
+            new THREE.MeshStandardMaterial({ color: 0x888888 })  // back
+        ];
+        this.cuboidMesh = new THREE.Mesh(cuboidGeometry, cuboidMaterial);
+        this.cuboidMesh.position.set(this.cuboid.x, this.cuboid.y, this.cuboid.z);
+        this.cuboidMesh.castShadow = true;
+        this.cuboidMesh.receiveShadow = true;
+        this.scene.add(this.cuboidMesh);
+
+        // --- Wall Display (Front Face, +Z) ---
+        // Create a canvas for dynamic text/image
+        const displayCanvas = document.createElement('canvas');
+        displayCanvas.width = 1024;
+        displayCanvas.height = 512;
+        this.displayCanvas = displayCanvas;
+        this.displayCtx = displayCanvas.getContext('2d');
+        this.updateWallDisplay('Welcome to AWorld!');
+        const displayTexture = new THREE.CanvasTexture(displayCanvas);
+        displayTexture.needsUpdate = true;
+        this.displayTexture = displayTexture;
+        // Replace front material with canvas texture
+        this.cuboidMesh.material[4] = new THREE.MeshStandardMaterial({ map: displayTexture });
+
+        // Optionally, expose a method to update wall display externally
+        this.setWallDisplay = (msgOrImg) => this.updateWallDisplay(msgOrImg);
 
         // Add fog for depth
         this.scene.fog = new THREE.Fog(0xcccccc, 20, 100);
@@ -123,6 +164,33 @@ class Game {
         this.camera.lookAt(0, 0, 0);
     }
 
+    // Helper to update the display wall with text or image
+    updateWallDisplay(content) {
+        const ctx = this.displayCtx;
+        if (!ctx || !this.displayCanvas || !this.displayTexture) {
+            console.warn('Display wall not ready');
+            return;
+        }
+        ctx.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        if (typeof content === 'string') {
+            ctx.fillStyle = '#222';
+            ctx.fillRect(0, 0, this.displayCanvas.width, this.displayCanvas.height);
+            ctx.font = 'bold 70px Arial';
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(content, this.displayCanvas.width/2, this.displayCanvas.height/2);
+        } else if (content instanceof Image) {
+            ctx.drawImage(content, 0, 0, this.displayCanvas.width, this.displayCanvas.height);
+        } else {
+            ctx.fillStyle = '#a00';
+            ctx.font = 'bold 50px Arial';
+            ctx.fillText('Invalid wall content', this.displayCanvas.width/2, this.displayCanvas.height/2);
+            console.warn('Wall display received invalid content:', content);
+        }
+        this.displayTexture.needsUpdate = true;
+    }
+
     setupSocketEvents() {
         this.socket.on('connect', () => {
             console.log('Connected to server');
@@ -130,25 +198,28 @@ class Game {
         });
 
         this.socket.on('player_joined', (player) => {
+            if (!player || !player.id || !player.name) {
+                console.warn('Invalid player_joined:', player);
+                return;
+            }
             console.log('Player joined event received:', player);
             this.addPlayer(player);
         });
 
         // Receive the full list of current players (including after join)
         this.socket.on('current_players', (players) => {
+            if (!Array.isArray(players)) {
+                console.warn('Invalid current_players:', players);
+                return;
+            }
             console.log('Received current_players:', players);
-            const newIds = new Set(players.map(p => p.id));
-            this.players.forEach((_, id) => {
-                if (!newIds.has(id)) {
-                    this.removePlayer(id);
-                }
-            });
             players.forEach(player => {
-                if (!this.players.has(player.id)) {
+                if (player && player.id && player.name) {
                     this.addPlayer(player);
+                } else {
+                    console.warn('Invalid player in current_players:', player);
                 }
             });
-            this.updatePlayerCount(players.length);
         });
 
         this.socket.on('global_state_update', (players) => {
@@ -201,6 +272,15 @@ class Game {
         this.socket.on('chat_message', (msg) => {
             this.showChatBubble(msg);
         });
+
+        // Listen for wall display updates from server
+        this.socket.on('wall_display_update', (data) => {
+            if (data && typeof data.content === 'string') {
+                this.updateWallDisplay(data.content);
+            } else {
+                console.warn('Invalid wall_display_update:', data);
+            }
+        });
     }
 
     setupUI() {
@@ -210,11 +290,13 @@ class Game {
 
         startButton.addEventListener('click', () => {
             this.playerName = playerNameInput.value.trim();
-            if (this.playerName) {
-                startScreen.style.display = 'none';
-                document.getElementById('game-container').style.display = 'block';
-                this.startGame();
+            if (!this.playerName || typeof this.playerName !== 'string' || this.playerName.trim().length === 0) {
+                alert('Please enter a valid player name.');
+                return;
             }
+            startScreen.style.display = 'none';
+            document.getElementById('game-container').style.display = 'block';
+            this.startGame();
         });
 
         playerNameInput.addEventListener('keypress', (e) => {
@@ -479,12 +561,31 @@ class Game {
         if (this.playerMesh && this.playerId) {
             // Calculate movement using controls
             const movement = this.controls.update();
-            // Apply movement to a local variable, but don't update mesh directly
-            const newPos = {
-                x: this.playerMesh.position.x + movement.x,
-                y: this.playerMesh.position.y - 1 + movement.y, // -1 to match server
-                z: this.playerMesh.position.z + movement.z
-            };
+            // --- Cuboid collision detection ---
+            let newX = this.playerMesh.position.x + movement.x;
+            let newY = this.playerMesh.position.y - 1 + movement.y;
+            let newZ = this.playerMesh.position.z + movement.z;
+            // Cuboid AABB collision
+            const b = this.cuboid;
+            const margin = 0.6; // slightly larger than player radius
+            const minX = b.x - b.width/2 - margin;
+            const maxX = b.x + b.width/2 + margin;
+            const minY = 0; // on ground
+            const maxY = b.y + b.height/2 + margin;
+            const minZ = b.z - b.depth/2 - margin;
+            const maxZ = b.z + b.depth/2 + margin;
+            // If next position would be inside cuboid, block movement
+            if (
+                newX > minX && newX < maxX &&
+                newY > minY && newY < maxY &&
+                newZ > minZ && newZ < maxZ
+            ) {
+                // Block movement: revert to current position
+                newX = this.playerMesh.position.x;
+                newY = this.playerMesh.position.y - 1;
+                newZ = this.playerMesh.position.z;
+            }
+            const newPos = { x: newX, y: newY, z: newZ };
             // Only send if moved
             if (!this.lastSentPos ||
                 Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||

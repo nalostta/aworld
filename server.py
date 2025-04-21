@@ -11,6 +11,9 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 # Store active players with position, vertical velocity, and chat info
 players = {}
 
+# --- Wall Display State ---
+wall_display_content = 'Welcome to AWorld!'
+
 CHAT_EXPIRY_SECONDS = 15
 GRAVITY = 0.02  # units per tick
 JUMP_VELOCITY = 0.25  # units per jump
@@ -30,6 +33,16 @@ def broadcast_global_state():
 def index():
     return render_template('index.html')
 
+# API to update wall display (admin or server-side only)
+@app.route('/api/wall_display', methods=['POST'])
+def update_wall_display():
+    global wall_display_content
+    data = request.get_json()
+    content = data.get('content', '')
+    wall_display_content = content
+    socketio.emit('wall_display_update', {'content': content}, broadcast=True)
+    return {'status': 'ok'}
+
 @socketio.on('connect')
 def handle_connect():
     print(f'Client connected: sid={request.sid}')
@@ -48,11 +61,17 @@ def handle_disconnect():
 
 @socketio.on('player_join')
 def handle_player_join(data):
+    name = data.get('name', '').strip() if data.get('name') else ''
+    color = data.get('color', '').strip() if data.get('color') else ''
+    if not name or not color:
+        print('Rejected player_join: missing name or color', data)
+        emit('join_error', {'error': 'Missing name or color'}, room=request.sid)
+        return
     player_id = str(uuid.uuid4())
     players[request.sid] = {
         'id': player_id,
-        'name': data['name'],
-        'color': data['color'],
+        'name': name,
+        'color': color,
         'position': {'x': 0, 'y': 0, 'z': 0},
         'vy': 0.0,
         'chat_message': '',
@@ -61,6 +80,7 @@ def handle_player_join(data):
     emit('player_joined', players[request.sid], broadcast=True)
     emit('player_count_update', {'count': len(players)}, broadcast=True)
     emit('current_players', list(players.values()), room=request.sid)
+    emit('wall_display_update', {'content': wall_display_content}, room=request.sid)
     broadcast_global_state()
 
 @socketio.on('player_move')
