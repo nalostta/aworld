@@ -619,7 +619,39 @@ class Game {
     }
 }
 
-// Start the game when the page loads
+// --- Mobile Controls Integration ---
+if (window.isMobileDevice && window.isMobileDevice()) {
+    let mobileControls = null;
+    let lastMove = { x: 0, y: 0 };
+    // Wait for DOMContentLoaded to ensure UI is ready
+    window.addEventListener('DOMContentLoaded', () => {
+        mobileControls = new window.MobileControls(
+            (dx, dy) => {
+                // Map joystick to WASD-style movement
+                if (window.game && window.game.controls) {
+                    // Use a lower threshold for responsiveness
+                    window.game.controls.keys.forward = dy < -0.1;
+                    window.game.controls.keys.backward = dy > 0.1;
+                    window.game.controls.keys.left = dx < -0.1;
+                    window.game.controls.keys.right = dx > 0.1;
+                    // Set moveSpeed higher for mobile
+                    window.game.controls.moveSpeed = 0.18;
+                }
+            },
+            () => {
+                if (window.game && window.game.controls) {
+                    window.game.controls.keys.jump = true;
+                    setTimeout(() => { window.game.controls.keys.jump = false; }, 200);
+                }
+            }
+        );
+        mobileControls.show();
+    });
+}
+
+// Expose the Game instance globally for mobile controls
+window.game = null;
+const origGame = Game;
 window.addEventListener('load', () => {
-    new Game();
-}); 
+    window.game = new origGame();
+});
