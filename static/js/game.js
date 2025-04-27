@@ -1,3 +1,8 @@
+import { PlayerAvatar } from './components/PlayerAvatar.js';
+import { Portal } from './components/Portal.js';
+import { Building } from './components/Building.js';
+import PlayerControls from './controls.js';
+
 class Game {
     constructor() {
         this.scene = new THREE.Scene();
@@ -97,7 +102,7 @@ class Game {
         this.renderer.setPixelRatio(window.devicePixelRatio);
         document.getElementById('game-container').appendChild(this.renderer.domElement);
 
-        // Add ground with better texture
+        // Add ground
         const groundGeometry = new THREE.PlaneGeometry(100, 100, 50, 50);
         const groundMaterial = new THREE.MeshStandardMaterial({ 
             color: 0x3a8c3a,
@@ -109,57 +114,49 @@ class Game {
         ground.receiveShadow = true;
         this.scene.add(ground);
 
-        // Add grid with better visibility
+        // Add grid
         const gridHelper = new THREE.GridHelper(100, 100, 0x000000, 0x222222);
         this.scene.add(gridHelper);
 
-        // --- Cuboid Building ---
-        // Define cuboid size and position
-        this.cuboid = {
-            width: 8,
-            height: 5,
-            depth: 6,
-            x: 10,
-            y: 2.5, // half height (centered on ground)
-            z: 0
-        };
-        const cuboidGeometry = new THREE.BoxGeometry(this.cuboid.width, this.cuboid.height, this.cuboid.depth);
-        const cuboidMaterial = [
-            new THREE.MeshStandardMaterial({ color: 0x888888 }), // right
-            new THREE.MeshStandardMaterial({ color: 0x888888 }), // left
-            new THREE.MeshStandardMaterial({ color: 0xaaaaaa }), // top
-            new THREE.MeshStandardMaterial({ color: 0x666666 }), // bottom
-            new THREE.MeshStandardMaterial({ color: 0xffffff }), // front (display wall)
-            new THREE.MeshStandardMaterial({ color: 0x888888 })  // back
-        ];
-        this.cuboidMesh = new THREE.Mesh(cuboidGeometry, cuboidMaterial);
-        this.cuboidMesh.position.set(this.cuboid.x, this.cuboid.y, this.cuboid.z);
-        this.cuboidMesh.castShadow = true;
-        this.cuboidMesh.receiveShadow = true;
+        // --- Modular Building ---
+        // Wall display uses a canvas texture as before
+        const displayCanvas = document.createElement('canvas');
+        displayCanvas.width = 512; displayCanvas.height = 256;
+        const displayCtx = displayCanvas.getContext('2d');
+        displayCtx.fillStyle = '#222';
+        displayCtx.fillRect(0, 0, 512, 256);
+        // Smaller, multi-line welcome text
+        displayCtx.font = 'bold 24px Arial';
+        displayCtx.fillStyle = '#fff';
+        displayCtx.textAlign = 'center';
+        displayCtx.textBaseline = 'middle';
+        displayCtx.fillText('Welcome to', 256, 100);
+        displayCtx.fillText('AWorld!', 256, 150);
+        const displayTexture = new THREE.CanvasTexture(displayCanvas);
+        this.displayCanvas = displayCanvas;
+        this.displayCtx = displayCtx;
+        this.displayTexture = displayTexture;
+        // Modular cuboid building
+        this.cuboid = { x: 0, y: 0, z: -8, width: 8, height: 5, depth: 4 };
+        const building = new Building(
+            { x: this.cuboid.x, y: this.cuboid.y, z: this.cuboid.z },
+            { width: this.cuboid.width, height: this.cuboid.height, depth: this.cuboid.depth },
+            displayTexture
+        );
+        this.cuboidMesh = building.getObject3D();
         this.scene.add(this.cuboidMesh);
 
-        // --- Wall Display (Front Face, +Z) ---
-        // Create a canvas for dynamic text/image
-        const displayCanvas = document.createElement('canvas');
-        displayCanvas.width = 1024;
-        displayCanvas.height = 512;
-        this.displayCanvas = displayCanvas;
-        this.displayCtx = displayCanvas.getContext('2d');
-        this.updateWallDisplay('Welcome to AWorld!');
-        const displayTexture = new THREE.CanvasTexture(displayCanvas);
-        displayTexture.needsUpdate = true;
-        this.displayTexture = displayTexture;
-        // Replace front material with canvas texture
-        this.cuboidMesh.material[4] = new THREE.MeshStandardMaterial({ map: displayTexture });
+        // --- Modular Portal Example ---
+        this.portals = [];
+        const portal1 = new Portal({ x: 6, y: 0, z: 6 }, 0xffa500, 'ringy');
+        const portal2 = new Portal({ x: -6, y: 0, z: 6 }, 0x00bfff, 'housy');
+        this.scene.add(portal1.getObject3D());
+        this.scene.add(portal2.getObject3D());
+        this.portals.push(portal1, portal2);
 
-        // Optionally, expose a method to update wall display externally
-        this.setWallDisplay = (msgOrImg) => this.updateWallDisplay(msgOrImg);
-
-        // Add fog for depth
+        // Fog and camera
         this.scene.fog = new THREE.Fog(0xcccccc, 20, 100);
         this.scene.background = new THREE.Color(0xcccccc);
-
-        // Set camera position
         this.camera.position.set(0, 5, 10);
         this.camera.lookAt(0, 0, 0);
     }
@@ -366,56 +363,29 @@ class Game {
     }
 
     createPlayerMesh(color) {
-        // Create player body
-        const bodyGeometry = new THREE.BoxGeometry(1, 2, 1);
-        const bodyMaterial = new THREE.MeshStandardMaterial({ 
-            color: color,
-            roughness: 0.7,
-            metalness: 0.3
-        });
-        const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.position.y = 1;
-
-        // Add head (slightly smaller box on top)
-        const headGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
-        const headMaterial = new THREE.MeshStandardMaterial({ 
-            color: color,
-            roughness: 0.7,
-            metalness: 0.3
-        });
-        const head = new THREE.Mesh(headGeometry, headMaterial);
-        head.position.y = 1.4;
-        head.castShadow = true;
-        head.receiveShadow = true;
-        mesh.add(head);
-
-        return mesh;
+        // Use modular PlayerAvatar
+        const avatar = new PlayerAvatar({ x: 0, y: 0, z: 0 }, color);
+        return avatar.getObject3D();
     }
 
     createPlayerLabel(name) {
         const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.width = 192;
-        canvas.height = 40;
-        // Draw background
-        context.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        // Draw text (smaller font)
-        context.font = 'bold 20px Arial';
-        context.textAlign = 'center';
-        context.fillStyle = 'white';
-        context.fillText(name, canvas.width / 2, 28);
+        canvas.width = 256;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.font = 'bold 32px Arial';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 4;
+        ctx.strokeText(name, 128, 32);
+        ctx.fillText(name, 128, 32);
         const texture = new THREE.CanvasTexture(canvas);
-        texture.minFilter = THREE.LinearFilter;
-        const material = new THREE.SpriteMaterial({ 
-            map: texture,
-            transparent: true
-        });
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
         const sprite = new THREE.Sprite(material);
-        sprite.scale.set(2.2, 0.45, 1); // smaller label
-        sprite.position.set(0, 2.2, 0.01); // just above head, centered
+        sprite.scale.set(3, 0.75, 1);
+        sprite.position.set(0, 2.2, 0); // Adjust height above player head
         return sprite;
     }
 
@@ -623,6 +593,8 @@ class Game {
 if (window.isMobileDevice && window.isMobileDevice()) {
     let mobileControls = null;
     let lastMove = { x: 0, y: 0 };
+    let swipeStartX = null;
+    let swipeActive = false;
     // Wait for DOMContentLoaded to ensure UI is ready
     window.addEventListener('DOMContentLoaded', () => {
         mobileControls = new window.MobileControls(
@@ -646,6 +618,35 @@ if (window.isMobileDevice && window.isMobileDevice()) {
             }
         );
         mobileControls.show();
+
+        // --- Camera swipe gesture ---
+        const gameContainer = document.getElementById('game-container');
+        if (gameContainer) {
+            gameContainer.addEventListener('touchstart', (e) => {
+                // Only start swipe if not on joystick or jump button
+                if (e.target.classList.contains('mobile-joystick') || e.target.classList.contains('mobile-joystick-knob') || e.target.classList.contains('mobile-jump-btn')) return;
+                if (e.touches.length === 1) {
+                    swipeStartX = e.touches[0].clientX;
+                    swipeActive = true;
+                }
+            }, { passive: false });
+            gameContainer.addEventListener('touchmove', (e) => {
+                if (!swipeActive || swipeStartX === null) return;
+                const dx = e.touches[0].clientX - swipeStartX;
+                if (Math.abs(dx) > 40) { // threshold for swipe
+                    if (window.game && window.game.controls) {
+                        const direction = dx > 0 ? 1 : -1;
+                        window.game.controls.rotateCamera(direction);
+                    }
+                    swipeActive = false;
+                    swipeStartX = null;
+                }
+            }, { passive: false });
+            gameContainer.addEventListener('touchend', () => {
+                swipeActive = false;
+                swipeStartX = null;
+            });
+        }
     });
 }
 

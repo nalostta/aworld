@@ -223,4 +223,6 @@ class PlayerControls {
 
         return this.getMovementVector();
     }
-} 
+}
+
+export default PlayerControls;
