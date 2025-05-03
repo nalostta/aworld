@@ -1,6 +1,7 @@
 import { PlayerAvatar } from './components/PlayerAvatar.js';
 import { Portal } from './components/Portal.js';
 import { Building } from './components/Building.js';
+import { Tree } from './components/Tree.js';
 import PlayerControls from './controls.js';
 
 class Game {
@@ -153,6 +154,47 @@ class Game {
         this.scene.add(portal1.getObject3D());
         this.scene.add(portal2.getObject3D());
         this.portals.push(portal1, portal2);
+
+        // --- Add Tree in front of wall, farther than portals ---
+        // Wall Z is -8, portals Z are 6, so place tree at Z=12
+        this.tree = new Tree({ x: 0, y: 0, z: 12 });
+        this.scene.add(this.tree.getObject3D());
+
+        // --- Add 14 more trees with non-linear, spaced-out, randomized positions ---
+        this.trees = [this.tree];
+        let placedTrees = [ { x: 0, y: 0, z: 12 } ]; // Start with the manually placed tree
+        let attempts = 0;
+        for (let i = 0; i < 14; i++) {
+            let valid = false;
+            let x, z;
+            while (!valid && attempts < 1000) {
+                // Use a normal distribution for more natural spread
+                let angle = Math.random() * Math.PI * 2;
+                let radius = Math.abs((Math.random() + Math.random()) * 18); // More clustered, but can go farther
+                x = Math.cos(angle) * radius + (Math.random() - 0.5) * 2; // Add jitter
+                z = Math.sin(angle) * radius + (Math.random() - 0.5) * 2;
+                // Ensure at least 4 units from all other trees
+                valid = true;
+                for (const t of placedTrees) {
+                    let dx = x - t.x;
+                    let dz = z - t.z;
+                    if (Math.sqrt(dx*dx + dz*dz) < 4) {
+                        valid = false;
+                        break;
+                    }
+                }
+                attempts++;
+            }
+            placedTrees.push({ x, y: 0, z });
+            let trunkHeight = 3 + Math.random() * 6;
+            let foliageRadius = 1 + Math.random();
+            let tree = new Tree(
+                { x, y: 0, z },
+                { size: { trunkHeight, foliageRadius } }
+            );
+            this.scene.add(tree.getObject3D());
+            this.trees.push(tree);
+        }
 
         // Fog and camera
         this.scene.fog = new THREE.Fog(0xcccccc, 20, 100);
