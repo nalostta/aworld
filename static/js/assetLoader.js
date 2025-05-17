@@ -51,6 +51,10 @@ export async function loadExternalAssets(scene, registryUrl = '/static/asset_reg
           return;
         }
         obj.position.set(spawn.x, spawn.y, spawn.z);
+        if (asset.scale && typeof asset.scale.x === 'number' && typeof asset.scale.y === 'number' && typeof asset.scale.z === 'number') {
+          obj.scale.set(asset.scale.x, asset.scale.y, asset.scale.z);
+          console.log(`[DEBUG] Applied scale to asset '${asset.name || asset.gltfPath}':`, asset.scale);
+        }
         console.log(`[DEBUG] Successfully loaded asset '${asset.name || asset.gltfPath}' from ${asset.gltfPath} at`, spawn);
         scene.add(obj);
         loadedAssets++;
