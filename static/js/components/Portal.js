@@ -1,6 +1,6 @@
 // Modular Portal component for AWorld
 // Represents an interactive portal or arcade cabinet
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js';
+import * as THREE from '../three.js';
 
 export class Portal {
     constructor(position, color, label) {

@@ -1,12 +1,13 @@
 // assetLoader.js
 // Loads external GLTF assets listed in asset_registry.json and spawns them in the scene
 console.log('[DEBUG] Loaded assetLoader.js');
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js';
+import * as THREE from './three.js';
 console.log('[DEBUG] THREE imported:', typeof THREE);
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFLoader } from './loaders/GLTFLoader.js';
 console.log('[DEBUG] GLTFLoader imported:', typeof GLTFLoader);
 
 export async function loadExternalAssets(scene, registryUrl = '/static/asset_registry.json') {
+  console.log('[DEBUG] Starting to load external assets from registry:', registryUrl);
   let registry;
   try {
     const res = await fetch(registryUrl);
@@ -23,28 +24,50 @@ export async function loadExternalAssets(scene, registryUrl = '/static/asset_reg
     loader = new GLTFLoader();
     console.log('[DEBUG] GLTFLoader instance created');
   } catch (e) {
-    console.error('[DEBUG] Failed to instantiate GLTFLoader:', e);
+    console.error('[DEBUG] Error creating GLTFLoader:', e);
     return;
   }
 
-  for (const asset of registry) {
-    for (const spawn of asset.spawnPoints) {
-      loader.load(
-        asset.gltfPath,
-        (gltf) => {
-          const obj = gltf.scene.clone();
-          obj.position.set(spawn.x, spawn.y, spawn.z);
-          // Physics and interaction logic can be attached here
-          // Example: obj.userData.physics = asset.physics;
-          console.log(`[DEBUG] Loaded asset ${asset.gltfPath} at`, spawn);
-          scene.add(obj);
-          console.log(`Loaded asset '${asset.name}' at`, spawn);
-        },
-        undefined,
-        (err) => {
-          console.error(`[DEBUG] Error loading GLTF ${asset.gltfPath}:`, err);
-        }
-      );
-    }
+  let totalAssets = 0, loadedAssets = 0, failedAssets = 0;
+  if (!Array.isArray(registry)) {
+    console.error('[DEBUG] Asset registry is not an array:', registry);
+    return;
   }
+  for (const asset of registry) {
+    if (!asset.gltfPath) {
+      console.warn('[DEBUG] Asset entry missing gltfPath:', asset);
+      continue;
+    }
+    const spawn = asset.spawnPoints && asset.spawnPoints[0] ? asset.spawnPoints[0] : { x: 0, y: 0, z: 0 };
+    console.log(`[DEBUG] Preparing to load asset: ${asset.name || asset.gltfPath}`);
+    console.log('[DEBUG] Spawn point for asset:', spawn);
+    loader.load(
+      asset.gltfPath,
+      (gltf) => {
+        let obj = gltf.scene || (gltf.scenes && gltf.scenes[0]) || gltf;
+        if (!obj) {
+          failedAssets++;
+          console.error(`[DEBUG] Loaded GLTF but no scene/object found for asset: ${asset.name || asset.gltfPath}`);
+          return;
+        }
+        obj.position.set(spawn.x, spawn.y, spawn.z);
+        console.log(`[DEBUG] Successfully loaded asset '${asset.name || asset.gltfPath}' from ${asset.gltfPath} at`, spawn);
+        scene.add(obj);
+        loadedAssets++;
+        // Confirm object in scene
+        if (!scene.children.includes(obj)) {
+          console.error(`[DEBUG] Object for asset '${asset.name || asset.gltfPath}' was not added to scene!`);
+        } else {
+          console.log(`[DEBUG] Added asset '${asset.name}' to scene at`, spawn, 'Object:', obj);
+        }
+      },
+      undefined,
+      (err) => {
+        failedAssets++;
+        console.error(`[DEBUG] Error loading GLTF '${asset.name || asset.gltfPath}' from ${asset.gltfPath} at`, spawn, err);
+      }
+    );
+    totalAssets++;
+  }
+  console.log(`[DEBUG] Asset loading summary: attempted=${totalAssets}, loaded=${loadedAssets}, failed=${failedAssets}`);
 }

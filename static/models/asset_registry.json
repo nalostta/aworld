@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Porsche_911_Interior",
+    "gltfPath": "static/models/Porsche_911_Interior/scene.gltf",
+    "spawnPoints": [ { "x": 20, "y": 0, "z": 20 } ],
+    "physics": { "type": "static", "collisionShape": "mesh" },
+    "scale": { "x": 2, "y": 2, "z": 2 },
+    "interactions": { "onClick": "showCarInfo" }
+  }
+]

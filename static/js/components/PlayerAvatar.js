@@ -1,6 +1,6 @@
 // Modular PlayerAvatar component for AWorld
 // This preserves the current cube-based avatar but allows for easy swap to a 3D model later
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js';
+import * as THREE from '../three.js';
 
 export class PlayerAvatar {
     constructor(position, color) {

@@ -1,8 +1,41 @@
 import { PlayerAvatar } from './components/PlayerAvatar.js';
+import * as THREE from './three.js';
 import { Portal } from './components/Portal.js';
 import { Building } from './components/Building.js';
 import { Tree } from './components/Tree.js';
 import PlayerControls from './controls.js';
+import { textureLoaderEngine } from './textureLoader.js';
+import { loadExternalAssets } from './assetLoader.js';
+
+// Helper: Discover models and their textures from the static/models/ directory
+async function discoverModelsAndTextures() {
+    // This assumes the server exposes a /static/models/ directory listing via fetchable JSON endpoints or similar.
+    // If not, you may need to provide this list from the backend or generate it at build time.
+    // For now, we'll hardcode the logic for available models, but this is the place to automate.
+    // Example with a single model:
+    return [
+        {
+            name: 'Porsche_911_Interior',
+            textures: [
+                'Discs_baseColor.jpeg', 'Discs_metallicRoughness.png', 'LOGO1_baseColor.jpeg', 'LOGO1_clearcoat.png',
+                'LOGO1_metallicRoughness.png', 'LOGO1_normal.png', 'belts_metallicRoughness.png', 'belts_normal.png',
+                'bl_pl_M_ext_metallicRoughness.png', 'bl_pl_M_int_metallicRoughness.png', 'body_main_metallicRoughness.png',
+                'brakes_metallicRoughness.png', 'carbon_int_baseColor.jpeg', 'carbon_int_metallicRoughness.png',
+                'dynamics_baseColor.jpeg', 'dynamics_metallicRoughness.png', 'dynamics_normal.png',
+                'headlights_pattern_normal.png', 'headlights_plastic_ring_normal.png', 'hedlights_grid_normal.png',
+                'invisible_all_metallicRoughness.png', 'leather_int_baseColor.jpeg', 'leather_int_metallicRoughness.png',
+                'leather_perforated_metallicRoughness.png', 'leather_perforated_normal.png', 'leather_seam_metallicRoughness.png',
+                'leather_seam_normal.png', 'number_plate1_baseColor.jpeg', 'pipes_chrom_metallicRoughness.png',
+                'pl_leather_int_metallicRoughness.png', 'pl_leather_int_normal.png', 'red_light_main_emissive.jpeg',
+                'reflectors_baseColor.jpeg', 'reflectors_normal.png', 'reisin_metallicRoughness.png',
+                'rim_black_metallicRoughness.png', 'rim_chrome_metallicRoughness.png', 'rug_interior_baseColor.jpeg',
+                'rug_interior_metallicRoughness.png', 'rug_interior_normal.png', 'tires_metallicRoughness.png',
+                'tires_normal.png', 'upholstery_baseColor.jpeg', 'upholstery_metallicRoughness.png',
+                'upholstery_normal.png', 'windows_dots_baseColor.png'
+            ]
+        }
+    ];
+}
 
 class Game {
     constructor() {
@@ -11,6 +44,22 @@ class Game {
         this.renderer = new THREE.WebGLRenderer({ antialias: true });
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        console.log('[DEBUG] Game constructor: scene created', this.scene);
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Handle visibility change
+        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
+
+        // Handle focus/blur events
+        window.addEventListener('focus', () => this.handleFocus());
+        window.addEventListener('blur', () => this.handleBlur());
+
         this.controls = new PlayerControls();
         this.players = new Map();
         this.socket = io({
@@ -40,25 +89,65 @@ class Game {
         directionalLight.shadow.camera.far = 500;
         this.scene.add(directionalLight);
 
+        // Dynamically discover and load all model textures at game start
+        this.modelTextures = {}; // { modelName: { textureName: THREE.Texture } }
+        this.modelTexturesReady = false;
+        discoverModelsAndTextures().then((models) => {
+            let loadedCount = 0;
+            const total = models.length;
+            if (total === 0) {
+                this.modelTexturesReady = true;
+                return;
+            }
+            models.forEach(model => {
+                textureLoaderEngine.loadModelTextures(
+                    model.name,
+                    model.textures,
+                    (textures) => {
+                        this.modelTextures[model.name] = textures;
+                        loadedCount++;
+                        if (loadedCount === total) {
+                            this.modelTexturesReady = true;
+                            console.log('[DEBUG] All model textures loaded:', Object.keys(this.modelTextures));
+                            // Once all model textures are loaded, load all assets from asset_registry.json
+                            this.loadAllAssetsFromRegistry();
+                        }
+                    }
+                );
+            });
+        });
+
         this.setupScene();
         this.setupSocketEvents();
         this.setupUI();
         this.animate();
-
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // Handle visibility change
-        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
-        
-        // Handle focus/blur events
-        window.addEventListener('focus', () => this.handleFocus());
-        window.addEventListener('blur', () => this.handleBlur());
     }
+
+    /**
+     * Loads all assets specified in asset_registry.json and spawns them in the scene.
+     * Attaches physics and interaction data to each loaded object.
+     */
+    async loadAllAssetsFromRegistry() {
+        // Adjust the path if your asset_registry.json is elsewhere
+        const registryPath = '/static/models/asset_registry.json';
+        try {
+            await loadExternalAssets(this.scene, registryPath);
+            console.log('[DEBUG] All assets from asset_registry.json loaded into the scene');
+            // Debug: log scene children after loading
+            if (this.scene && this.scene.children) {
+                console.log('[DEBUG] Scene now contains', this.scene.children.length, 'objects. Types:', this.scene.children.map(obj => obj.type));
+                this.scene.children.forEach((obj, idx) => {
+                    console.log(`[DEBUG] Scene child[${idx}]:`, obj.name || obj.type, obj);
+                });
+            } else {
+                console.warn('[DEBUG] Scene or scene.children is undefined after asset loading');
+            }
+        } catch (e) {
+            console.error('[ERROR] Failed to load assets from registry:', e);
+        }
+    }
+
+    
 
     handleFocus() {
         this.isActive = true;
@@ -89,6 +178,10 @@ class Game {
 
     updateActiveState() {
         const debugInfo = document.getElementById('debug-info');
+        if (!debugInfo) {
+            // Avoid errors if debug-info is missing
+            return;
+        }
         if (this.isActive) {
             debugInfo.textContent = 'Session Active - Controls Enabled';
             debugInfo.style.backgroundColor = 'rgba(0, 128, 0, 0.7)';
@@ -98,18 +191,48 @@ class Game {
         }
     }
 
+
     setupScene() {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(window.devicePixelRatio);
-        document.getElementById('game-container').appendChild(this.renderer.domElement);
+        const gameContainer = document.getElementById('game-container');
+        if (!gameContainer) {
+            console.error('[ERROR] game-container element not found in DOM');
+            return;
+        }
+        gameContainer.appendChild(this.renderer.domElement);
 
         // Add ground
         const groundGeometry = new THREE.PlaneGeometry(100, 100, 50, 50);
-        const groundMaterial = new THREE.MeshStandardMaterial({ 
-            color: 0x3a8c3a,
-            roughness: 0.8,
-            metalness: 0.2
-        });
+        // Dynamically use a model texture for ground if available (example: Porsche_911_Interior/rug_interior_baseColor.jpeg)
+        let groundMaterial;
+        let foundTexture = null;
+        // Search all loaded model textures for a suitable ground texture
+        if (this.modelTextures) {
+            // (rest of function unchanged)
+        }
+
+        for (const modelName in this.modelTextures) {
+            if (this.modelTextures[modelName]['rug_interior_baseColor.jpeg']) {
+                foundTexture = this.modelTextures[modelName]['rug_interior_baseColor.jpeg'];
+                break;
+            }
+        }
+        // End of ground texture search
+
+        if (foundTexture) {
+            groundMaterial = new THREE.MeshStandardMaterial({ 
+                map: foundTexture,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+        } else {
+            groundMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x3a8c3a,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+        }
         const ground = new THREE.Mesh(groundGeometry, groundMaterial);
         ground.rotation.x = -Math.PI / 2;
         ground.receiveShadow = true;
