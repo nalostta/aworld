@@ -11,12 +11,20 @@ class PlayerControls {
         };
         
         this.cameraRotation = 0;
-        this.moveSpeed = 0.1;
+        this.moveSpeed = 0.15;  // Slightly faster base movement
         this.sprintMultiplier = 2;
         this.crouchMultiplier = 0.5;
-        this.jumpForce = 0.2;
-        this.gravity = 0.01;
+        this.jumpForce = 0.45;  // Increased for higher jumps
+        this.gravity = 0.025;   // Increased for snappier jumps
+        this.terminalVelocity = 0.5;  // Max fall speed
+        
+        // Enhanced movement properties
         this.verticalVelocity = 0;
+        this.velocity = { x: 0, z: 0 };
+        this.acceleration = 0.02;
+        this.deceleration = 0.05;
+        this.maxVelocity = 0.2;
+        
         this.isGrounded = true;
         this.isActive = true; // Default to active
         this.lastActiveTime = Date.now();
@@ -171,56 +179,131 @@ class PlayerControls {
         let speed = this.moveSpeed;
         if (this.keys.sprint) speed *= this.sprintMultiplier;
         if (this.keys.crouch) speed *= this.crouchMultiplier;
+        
+        // Slightly reduce speed when in air for better control
+        const airControlFactor = this.isGrounded ? 1.0 : 0.7;
 
-        let dx = 0;
-        let dz = 0;
+        // Calculate target velocity based on inputs and camera rotation
+        let targetVx = 0;
+        let targetVz = 0;
+        
+        // Apply air control factor to target speed
+        speed *= airControlFactor;
 
         // Calculate movement based on camera rotation
         if (this.keys.forward) {
-            dz -= Math.cos(this.cameraRotation) * speed;
-            dx -= Math.sin(this.cameraRotation) * speed;
+            targetVz -= Math.cos(this.cameraRotation) * speed;
+            targetVx -= Math.sin(this.cameraRotation) * speed;
         }
         if (this.keys.backward) {
-            dz += Math.cos(this.cameraRotation) * speed;
-            dx += Math.sin(this.cameraRotation) * speed;
+            targetVz += Math.cos(this.cameraRotation) * speed;
+            targetVx += Math.sin(this.cameraRotation) * speed;
         }
         if (this.keys.left) {
-            dx -= Math.cos(this.cameraRotation) * speed;
-            dz += Math.sin(this.cameraRotation) * speed;
+            targetVx -= Math.cos(this.cameraRotation) * speed;
+            targetVz += Math.sin(this.cameraRotation) * speed;
         }
         if (this.keys.right) {
-            dx += Math.cos(this.cameraRotation) * speed;
-            dz -= Math.sin(this.cameraRotation) * speed;
+            targetVx += Math.cos(this.cameraRotation) * speed;
+            targetVz -= Math.sin(this.cameraRotation) * speed;
         }
 
-        // Debug output for movement
-        if (dx !== 0 || dz !== 0) {
-            console.log("Movement vector:", { x: dx, y: this.verticalVelocity, z: dz });
+        // Apply acceleration/deceleration towards target velocity
+        const currentAcceleration = this.isGrounded ? this.acceleration : (this.acceleration * 0.7);
+        const currentDeceleration = this.isGrounded ? this.deceleration : (this.deceleration * 0.5);
+        
+        if (Math.abs(targetVx) > 0.001) {
+            // If we have input, accelerate in that direction
+            this.velocity.x += (targetVx - this.velocity.x) * currentAcceleration;
+        } else {
+            // Decelerate when no input
+            this.velocity.x *= (1 - currentDeceleration);
+            if (Math.abs(this.velocity.x) < 0.001) this.velocity.x = 0;
         }
 
-        return { x: dx, y: this.verticalVelocity, z: dz };
+        if (Math.abs(targetVz) > 0.001) {
+            this.velocity.z += (targetVz - this.velocity.z) * currentAcceleration;
+        } else {
+            this.velocity.z *= (1 - currentDeceleration);
+            if (Math.abs(this.velocity.z) < 0.001) this.velocity.z = 0;
+        }
+
+        // Cap maximum velocity
+        const currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+        if (currentSpeed > this.maxVelocity) {
+            const scaleFactor = this.maxVelocity / currentSpeed;
+            this.velocity.x *= scaleFactor;
+            this.velocity.z *= scaleFactor;
+        }
+
+        // Debug output for movement and jump state
+        if (this.debug && (this.velocity.x !== 0 || this.velocity.z !== 0 || this.verticalVelocity !== 0)) {
+            console.log("Movement:", { 
+                x: this.velocity.x.toFixed(3), 
+                y: this.verticalVelocity.toFixed(3), 
+                z: this.velocity.z.toFixed(3),
+                grounded: this.isGrounded,
+                jumping: !this.isGrounded && this.verticalVelocity > 0,
+                falling: !this.isGrounded && this.verticalVelocity < 0
+            });
+        }
+
+        return { x: this.velocity.x, y: this.verticalVelocity, z: this.velocity.z };
     }
 
-    update() {
+    update(playerY = 0) {
         if (!this.isActive) return { x: 0, y: 0, z: 0 };
 
-        // Handle jumping
+        // Handle jumping with improved logic
         if (this.keys.jump && this.isGrounded) {
             this.verticalVelocity = this.jumpForce;
             this.isGrounded = false;
+            this.jumpStartTime = Date.now();
+            // Trigger jump animation or effect
+            if (typeof this.onJump === 'function') {
+                this.onJump();
+            }
         }
 
-        // Apply gravity
+        // Apply gravity with terminal velocity
         if (!this.isGrounded) {
-            this.verticalVelocity -= this.gravity;
+            this.verticalVelocity = Math.max(
+                this.verticalVelocity - this.gravity, 
+                -this.terminalVelocity
+            );
+            
+            // Apply air resistance (slight horizontal drag while in air)
+            this.velocity.x *= 0.99;
+            this.velocity.z *= 0.99;
         }
 
-        // Ground check
-        if (this.verticalVelocity < 0) {
-            this.verticalVelocity = 0;
-            this.isGrounded = true;
+        // Ground check with improved landing behavior
+        const groundLevel = 1.0; // Player mesh origin is center; feet are at playerY - 1. Ground is at Y=0 for feet.
+        if (this.verticalVelocity <= 0 && playerY <= groundLevel) {
+            // Only trigger landing effects if we were in the air
+            if (!this.isGrounded) {
+                this.verticalVelocity = 0;
+                this.isGrounded = true;
+                
+                // Landing effects
+                if (typeof this.onLand === 'function') {
+                    this.onLand();
+                }
+                
+                // Dampening effect on landing based on fall speed
+                const fallSpeed = Math.abs(this.verticalVelocity);
+                const dampenFactor = Math.max(0.7, 1 - (fallSpeed * 0.5));
+                this.velocity.x *= dampenFactor;
+                this.velocity.z *= dampenFactor;
+            }
+        } else if (playerY > groundLevel) {
+            this.isGrounded = false;
         }
+        
+        // Update jump state for next frame
+        this.wasGrounded = this.isGrounded;
 
+        // Calculate movement vector with current velocity
         return this.getMovementVector();
     }
 }

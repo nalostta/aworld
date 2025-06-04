@@ -58,9 +58,31 @@ class Game {
 
         // Handle focus/blur events
         window.addEventListener('focus', () => this.handleFocus());
-        window.addEventListener('blur', () => this.handleBlur());
-
+        // Initialize controls with callbacks for jump/land effects
         this.controls = new PlayerControls();
+        this.controls.onJump = () => {
+            // You could add particle effects or sounds here
+            console.log('Player jumped!');
+            // Play jump sound if available
+            if (typeof this.audioContext !== 'undefined' && this.jumpSound) {
+                const source = this.audioContext.createBufferSource();
+                source.buffer = this.jumpSound;
+                source.connect(this.audioContext.destination);
+                source.start(0);
+            }
+        };
+        this.controls.onLand = () => {
+            // You could add landing effects here
+            console.log('Player landed!');
+            // Play landing sound if available
+            if (typeof this.audioContext !== 'undefined' && this.landSound) {
+                const source = this.audioContext.createBufferSource();
+                source.buffer = this.landSound;
+                source.connect(this.audioContext.destination);
+                source.start(0);
+            }
+        };
+        this.controls.debug = false; // Disable debug output
         this.players = new Map();
         this.socket = io({
             reconnection: true,
@@ -400,7 +422,7 @@ class Game {
                 // Update position
                 const obj = this.players.get(player.id);
                 if (obj && obj.mesh) {
-                    obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+                    obj.mesh.position.set(player.position.x, player.position.y, player.position.z);
                     // Handle chat bubble
                     if (player.chat_message && player.chat_message.length > 0) {
                         this.showChatBubble({ id: player.id, text: player.chat_message });
@@ -616,20 +638,116 @@ class Game {
             player.mesh.position.set(position.x, position.y + 1, position.z);
         }
     }
-
+    
     updatePlayerInfo() {
-        const playerInfo = document.getElementById('player-info');
-        if (this.playerMesh) {
-            const pos = this.playerMesh.position;
-            playerInfo.textContent = `Position: X: ${pos.x.toFixed(2)} Y: ${(pos.y - 1).toFixed(2)} Z: ${pos.z.toFixed(2)}`;
+        // Update debug info
+        if (this.debugInfo && this.playerMesh) {
+            this.debugInfo.innerText = `Position: ${this.playerMesh.position.x.toFixed(2)}, ${this.playerMesh.position.y.toFixed(2)}, ${this.playerMesh.position.z.toFixed(2)}`;
         }
     }
-
+    
     updatePlayerCount(count) {
         const countElem = document.getElementById('player-count');
         if (countElem) {
             countElem.textContent = `Players Online: ${count}`;
         }
+    }
+    
+    /**
+     * Enhanced collision detection system
+     * Checks for collisions with all objects in the scene and returns collision flags
+     * @param {number} x - New X position to check
+     * @param {number} y - New Y position to check
+     * @param {number} z - New Z position to check
+     * @returns {object} - Collision flags for each axis and an 'any' flag
+     */
+    checkCollisions(x, y, z) {
+        // Default: no collisions
+        const result = { x: false, y: false, z: false, any: false };
+        
+        // Player collision parameters
+        const playerRadius = 0.6;
+        const playerHeight = 2.0;
+        
+        // Check cuboid collision if it exists
+        if (this.cuboid) {
+            const b = this.cuboid;
+            const margin = playerRadius; // Use player radius as margin
+            
+            // Calculate cuboid boundaries
+            const minX = b.x - b.width/2 - margin;
+            const maxX = b.x + b.width/2 + margin;
+            const minY = 0; // ground
+            const maxY = b.y + b.height + margin;
+            const minZ = b.z - b.depth/2 - margin;
+            const maxZ = b.z + b.depth/2 + margin;
+            
+            // Detailed axis collision tests
+            // We perform each axis test separately to know which axes are colliding
+            
+            // X-axis collision: Check if new X position with current Y,Z would collide
+            if (x > minX && x < maxX && 
+                y > minY && y < maxY && 
+                this.playerMesh.position.z > minZ && this.playerMesh.position.z < maxZ) {
+                result.x = true;
+                result.any = true;
+            }
+            
+            // Y-axis collision: Check if new Y with current X,Z would collide
+            if (this.playerMesh.position.x > minX && this.playerMesh.position.x < maxX && 
+                y > minY && y < maxY && 
+                this.playerMesh.position.z > minZ && this.playerMesh.position.z < maxZ) {
+                result.y = true;
+                result.any = true;
+            }
+            
+            // Z-axis collision: Check if new Z with current X,Y would collide
+            if (this.playerMesh.position.x > minX && this.playerMesh.position.x < maxX && 
+                y > minY && y < maxY && 
+                z > minZ && z < maxZ) {
+                result.z = true;
+                result.any = true;
+            }
+        }
+        
+        // Check for collisions with trees, buildings, and other objects
+        // For now, this is simplified - in a real system, you'd use spatial partitioning
+        // to only check nearby objects
+        
+        // Example for checking tree collisions (assumes trees are in a 'trees' array)
+        if (this.trees && Array.isArray(this.trees)) {
+            this.trees.forEach(tree => {
+                const treePos = tree.position;
+                const treeRadius = tree.radius || 0.8; // Default trunk radius if not specified
+                
+                // Simple cylinder collision for tree trunks
+                const dx = x - treePos.x;
+                const dz = z - treePos.z;
+                const distSquared = dx * dx + dz * dz;
+                
+                // If distance to tree center is less than combined radii, we have a collision
+                const minDistance = playerRadius + treeRadius;
+                
+                if (distSquared < minDistance * minDistance) {
+                    // Determine which axis has more collision
+                    if (Math.abs(dx) > Math.abs(dz)) {
+                        result.x = true;
+                    } else {
+                        result.z = true;
+                    }
+                    result.any = true;
+                }
+            });
+        }
+        
+        // Ground collision - prevents falling through the ground
+        if (y < playerHeight / 2) {
+            result.y = true;
+            result.any = true;
+        }
+        
+        // Return the detailed collision result
+        return result;
     }
 
     showChatBubble(msg) {
@@ -687,57 +805,75 @@ class Game {
 
         // Prevent movement if chat is focused
         if (this.isChatFocused) {
-            this.updatePlayerInfo();
+            this.updatePlayerInfo(); // Still update info for other players
             this.renderer.render(this.scene, this.camera);
             return;
         }
 
-        // Only send position if local player mesh exists
+        // Local player movement and prediction
         if (this.playerMesh && this.playerId) {
-            // Calculate movement using controls
-            const movement = this.controls.update();
-            // --- Cuboid collision detection ---
-            let newX = this.playerMesh.position.x + movement.x;
-            let newY = this.playerMesh.position.y - 1 + movement.y;
-            let newZ = this.playerMesh.position.z + movement.z;
-            // Cuboid AABB collision
-            const b = this.cuboid;
-            const margin = 0.6; // slightly larger than player radius
-            const minX = b.x - b.width/2 - margin;
-            const maxX = b.x + b.width/2 + margin;
-            const minY = 0; // on ground
-            const maxY = b.y + b.height/2 + margin;
-            const minZ = b.z - b.depth/2 - margin;
-            const maxZ = b.z + b.depth/2 + margin;
-            // If next position would be inside cuboid, block movement
-            if (
-                newX > minX && newX < maxX &&
-                newY > minY && newY < maxY &&
-                newZ > minZ && newZ < maxZ
-            ) {
-                // Block movement: revert to current position
-                newX = this.playerMesh.position.x;
-                newY = this.playerMesh.position.y - 1;
-                newZ = this.playerMesh.position.z;
+            const currentPlayerY = this.playerMesh.position.y; // Current center Y
+            const movement = this.controls.update(currentPlayerY); // Get movement vector (dx, dy, dz)
+
+            const prevX = this.playerMesh.position.x;
+            const prevY = currentPlayerY; // Current center Y
+            const prevZ = this.playerMesh.position.z;
+
+            // Predicted new center positions based on controls
+            let predictedCenterX = prevX + movement.x;
+            let predictedCenterY = prevY + movement.y; // movement.y is deltaY from controls
+            let predictedCenterZ = prevZ + movement.z;
+
+            // --- Perform local collision detection against scene objects ---
+            const collisionInfo = this.checkCollisions(predictedCenterX, predictedCenterY, predictedCenterZ);
+
+            // Apply collision responses
+            if (collisionInfo.x) {
+                predictedCenterX = prevX; // Stop X movement
             }
-            const newPos = { x: newX, y: newY, z: newZ };
-            // Only send if moved
+            if (collisionInfo.z) {
+                predictedCenterZ = prevZ; // Stop Z movement
+            }
+            if (collisionInfo.y) {
+                predictedCenterY = prevY; // Revert to previous Y center
+                if (movement.y > 0) { // Was moving up into an obstacle
+                    this.controls.verticalVelocity = 0;
+                } else if (movement.y < 0) { // Was moving down into an obstacle (landing)
+                    this.controls.verticalVelocity = 0;
+                    this.controls.isGrounded = true; // Assume landed on the object
+                    if (typeof this.controls.onLand === 'function') {
+                        this.controls.onLand(); // Trigger landing effects/sounds
+                    }
+                }
+            }
+            
+            // Enforce world boundaries (for player center)
+            const worldSize = 50; // Half-size of the world
+            const playerHalfWidth = 0.5; // Assuming player is 1 unit wide/deep, radius 0.5
+            predictedCenterX = Math.max(-worldSize + playerHalfWidth, Math.min(worldSize - playerHalfWidth, predictedCenterX));
+            predictedCenterZ = Math.max(-worldSize + playerHalfWidth, Math.min(worldSize - playerHalfWidth, predictedCenterZ));
+
+            // --- Client-side prediction: Update local player mesh position immediately ---
+            this.playerMesh.position.set(predictedCenterX, predictedCenterY, predictedCenterZ);
+
+            // --- Send this predicted new center position to the server ---
+            const newPosToServer = { x: predictedCenterX, y: predictedCenterY, z: predictedCenterZ };
+            
+            const positionChangeThreshold = 0.01;
             if (!this.lastSentPos ||
-                Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||
-                Math.abs(newPos.y - this.lastSentPos.y) > 0.01 ||
-                Math.abs(newPos.z - this.lastSentPos.z) > 0.01) {
-                this.socket.emit('player_move', { position: newPos });
-                this.lastSentPos = { ...newPos };
+                Math.abs(newPosToServer.x - this.lastSentPos.x) > positionChangeThreshold ||
+                Math.abs(newPosToServer.y - this.lastSentPos.y) > positionChangeThreshold ||
+                Math.abs(newPosToServer.z - this.lastSentPos.z) > positionChangeThreshold) {
+                this.socket.emit('player_move', { position: newPosToServer });
+                this.lastSentPos = { ...newPosToServer };
             }
         }
 
-        // Camera tracking and rotation for local player
+        // Camera tracking for local player
         if (this.playerMesh) {
-            // Camera offset (distance and height from player)
             const cameraDistance = 10;
             const cameraHeight = 5;
             const rot = this.controls.cameraRotation || 0;
-            // Spherical coordinates
             const offsetX = Math.sin(rot) * cameraDistance;
             const offsetZ = Math.cos(rot) * cameraDistance;
             this.camera.position.set(
@@ -748,7 +884,6 @@ class Game {
             this.camera.lookAt(this.playerMesh.position);
         }
 
-        // Do NOT update playerMesh position here; update from global state only
         this.updatePlayerInfo();
         this.renderer.render(this.scene, this.camera);
     }

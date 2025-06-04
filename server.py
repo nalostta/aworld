@@ -15,8 +15,8 @@ players = {}
 wall_display_content = 'Welcome to AWorld!'
 
 CHAT_EXPIRY_SECONDS = 15
-GRAVITY = 0.02  # units per tick
-JUMP_VELOCITY = 0.25  # units per jump
+GRAVITY = 0.025  # units per tick (synced with client controls.js)
+JUMP_VELOCITY = 0.45  # units per jump (synced with client controls.js jumpForce)
 
 def prune_expired_chats():
     now = time.time()
@@ -86,21 +86,38 @@ def handle_player_join(data):
 @socketio.on('player_move')
 def handle_player_move(data):
     if request.sid in players:
-        pos = data['position']
-        player = players[request.sid]
-        # Detect jump: if y > ground and vy == 0, treat as jump
-        if pos['y'] > 0.01 and player['position']['y'] <= 0.01 and abs(player['vy']) < 1e-5:
+        client_pos = data['position']  # Client's proposed new center position
+        player = players[request.sid]    # Server's current player state
+
+        server_current_y_center = player['position']['y']
+        server_ground_y_center = 1.0  # Player center Y when feet are at Y=0
+
+        # Check if server considers player grounded
+        is_server_grounded = abs(server_current_y_center - server_ground_y_center) < 0.05
+
+        # Detect jump initiation from client's proposed Y position
+        # If client wants to be significantly higher and server thought it was grounded, apply jump velocity.
+        # Client's jumpForce is now synced with server's JUMP_VELOCITY.
+        if client_pos['y'] > server_current_y_center + (JUMP_VELOCITY * 0.3) and is_server_grounded:
             player['vy'] = JUMP_VELOCITY
-        # Apply gravity
+        
+        # Apply gravity to server's vertical velocity
         player['vy'] -= GRAVITY
-        # Update y position
-        new_y = player['position']['y'] + player['vy']
-        # Clamp to ground
-        if new_y <= 0:
-            new_y = 0
-            player['vy'] = 0
-        # Update position
-        player['position'] = {'x': pos['x'], 'y': new_y, 'z': pos['z']}
+
+        # Calculate server's new Y position (center) based on its own physics
+        new_server_y_center = server_current_y_center + player['vy']
+
+        # Clamp to ground (player's center should be at server_ground_y_center)
+        if new_server_y_center < server_ground_y_center:
+            new_server_y_center = server_ground_y_center
+            player['vy'] = 0  # Stop falling / reset velocity on ground
+
+        # Update player state: use client's X/Z, but server's authoritative Y and vy
+        player['position']['x'] = client_pos['x']
+        player['position']['y'] = new_server_y_center
+        player['position']['z'] = client_pos['z']
+        # player['vy'] is already updated and part of the player state implicitly
+
         broadcast_global_state()
 
 @socketio.on('chat_message')
