@@ -26,8 +26,10 @@
 ## Usage
 To run the application locally, use:
 > python server.py
+# Alternatively, try the experimental FastAPI server:
+> python server_fastapi.py
 
-Open your web browser and visit http://localhost:5000 to access the game.
+Open your web browser and visit http://localhost:5001 to access the game.
 
 Project Structure
 
@@ -37,6 +39,7 @@ aworld/     \
 ├── game_design.md      # Game design and documentation notes  \
 ├── requirements.txt    # Python package dependencies          \
 └── server.py           # Main Flask application server
+├── server_fastapi.py   # Experimental FastAPI port
 
 
 
