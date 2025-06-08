@@ -6,7 +6,11 @@ console.log('[DEBUG] THREE imported:', typeof THREE);
 import { GLTFLoader } from './loaders/GLTFLoader.js';
 console.log('[DEBUG] GLTFLoader imported:', typeof GLTFLoader);
 
-export async function loadExternalAssets(scene, registryUrl = '/static/asset_registry.json') {
+// The asset registry lives under the models directory. The original default
+// path pointed to `/static/asset_registry.json`, which does not exist and
+// results in a failed fetch.  Point to the correct location instead so assets
+// load properly when the game starts.
+export async function loadExternalAssets(scene, registryUrl = '/static/models/asset_registry.json') {
   console.log('[DEBUG] Starting to load external assets from registry:', registryUrl);
   let registry;
   try {
