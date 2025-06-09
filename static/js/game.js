@@ -62,12 +62,10 @@ class Game {
 
         this.controls = new PlayerControls();
         this.players = new Map();
-        this.socket = io({
-            reconnection: true,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
-            reconnectionAttempts: 5
-        });
+        this.ws = null;
+this.wsReconnectAttempts = 0;
+this.maxReconnectAttempts = 5;
+this.connectWebSocket();
         this.playerName = '';
         this.playerId = null;
         this.playerMesh = null;
@@ -118,7 +116,7 @@ class Game {
         });
 
         this.setupScene();
-        this.setupSocketEvents();
+        // Socket events now handled by WebSocket setup in connectWebSocket
         this.setupUI();
         this.animate();
     }
@@ -353,97 +351,104 @@ class Game {
         this.displayTexture.needsUpdate = true;
     }
 
-    setupSocketEvents() {
-        this.socket.on('connect', () => {
-            console.log('Connected to server');
-            this.updateActiveState();
-        });
+    connectWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${wsProtocol}://${window.location.host}/ws`;
+    this.ws = new WebSocket(wsUrl);
 
-        this.socket.on('player_joined', (player) => {
-            if (!player || !player.id || !player.name) {
-                console.warn('Invalid player_joined:', player);
+    this.ws.onopen = () => {
+        console.log('[WebSocket] Connected to server');
+        this.wsReconnectAttempts = 0;
+        this.updateActiveState();
+        // Optionally send a handshake or ready event here
+    };
+
+    this.ws.onmessage = (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            console.log('[WebSocket] Received message:', msg);
+            if (!msg.event) {
+                console.warn('[WebSocket] Received message without event field:', msg);
                 return;
             }
-            console.log('Player joined event received:', player);
-            this.addPlayer(player);
-        });
-
-        // Receive the full list of current players (including after join)
-        this.socket.on('current_players', (players) => {
-            if (!Array.isArray(players)) {
-                console.warn('Invalid current_players:', players);
-                return;
-            }
-            console.log('Received current_players:', players);
-            players.forEach(player => {
-                if (player && player.id && player.name) {
-                    this.addPlayer(player);
-                } else {
-                    console.warn('Invalid player in current_players:', player);
-                }
-            });
-        });
-
-        this.socket.on('global_state_update', (players) => {
-            // Sync all sprites to global state
-            const newIds = new Set(players.map(p => p.id));
-            this.players.forEach((_, id) => {
-                if (!newIds.has(id)) {
-                    this.removePlayer(id);
-                }
-            });
-            players.forEach(player => {
-                // Add if missing
-                if (!this.players.has(player.id)) {
-                    this.addPlayer(player);
-                }
-                // Update position
-                const obj = this.players.get(player.id);
-                if (obj && obj.mesh) {
-                    obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
-                    // Handle chat bubble
-                    if (player.chat_message && player.chat_message.length > 0) {
-                        this.showChatBubble({ id: player.id, text: player.chat_message });
-                    } else if (obj.bubble) {
-                        // Remove expired bubble
-                        obj.mesh.remove(obj.bubble);
-                        obj.bubble = null;
+            switch (msg.event) {
+                case 'player_joined':
+                    this.addPlayer(msg.data);
+                    break;
+                case 'current_players':
+                    (msg.data || []).forEach(player => this.addPlayer(player));
+                    break;
+                case 'global_state_update':
+                    this.handleGlobalStateUpdate(msg.data);
+                    break;
+                case 'player_count_update':
+                    this.updatePlayerCount(msg.data.count);
+                    break;
+                case 'player_disconnected':
+                    this.removePlayer(msg.data.id);
+                    break;
+                case 'chat_message':
+                    this.showChatBubble(msg.data);
+                    break;
+                case 'wall_display_update':
+                    if (msg.data && typeof msg.data.content === 'string') {
+                        this.updateWallDisplay(msg.data.content);
                     }
-                }
-            });
-            this.updatePlayerCount(players.length);
-        });
-
-        this.socket.on('player_count_update', (data) => {
-            this.updatePlayerCount(data.count);
-        });
-
-        this.socket.on('player_disconnected', (data) => {
-            this.removePlayer(data.id);
-        });
-
-        // Add error handling
-        this.socket.on('error', (error) => {
-            console.error('Socket error:', error);
-        });
-
-        this.socket.on('disconnect', (reason) => {
-            console.log('Disconnected from server:', reason);
-        });
-
-        this.socket.on('chat_message', (msg) => {
-            this.showChatBubble(msg);
-        });
-
-        // Listen for wall display updates from server
-        this.socket.on('wall_display_update', (data) => {
-            if (data && typeof data.content === 'string') {
-                this.updateWallDisplay(data.content);
-            } else {
-                console.warn('Invalid wall_display_update:', data);
+                    break;
+                default:
+                    console.warn('[WebSocket] Unknown event:', msg.event, msg);
             }
-        });
-    }
+        } catch (e) {
+            console.error('[WebSocket] Error parsing message:', event.data, e);
+        }
+    };
+
+    this.ws.onerror = (err) => {
+        console.error('[WebSocket] Error:', err);
+    };
+
+    this.ws.onclose = (e) => {
+        console.warn('[WebSocket] Disconnected from server', e.reason);
+        if (this.wsReconnectAttempts < this.maxReconnectAttempts) {
+            setTimeout(() => {
+                this.wsReconnectAttempts++;
+                this.connectWebSocket();
+            }, 1000 * this.wsReconnectAttempts);
+        } else {
+            alert('Unable to reconnect to server. Please refresh the page.');
+        }
+    };
+}
+
+handleGlobalStateUpdate(players) {
+    // Sync all sprites to global state
+    const newIds = new Set(players.map(p => p.id));
+    this.players.forEach((_, id) => {
+        if (!newIds.has(id)) {
+            this.removePlayer(id);
+        }
+    });
+    players.forEach(player => {
+        // Add if missing
+        if (!this.players.has(player.id)) {
+            this.addPlayer(player);
+        }
+        // Update position
+        const obj = this.players.get(player.id);
+        if (obj && obj.mesh) {
+            obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+            // Handle chat bubble
+            if (player.chat_message && player.chat_message.length > 0) {
+                this.showChatBubble({ id: player.id, text: player.chat_message });
+            } else if (obj.bubble) {
+                // Remove expired bubble
+                obj.mesh.remove(obj.bubble);
+                obj.bubble = null;
+            }
+        }
+    });
+    this.updatePlayerCount(players.length);
+}
 
     setupUI() {
         const startScreen = document.getElementById('start-screen');
@@ -488,7 +493,9 @@ class Game {
             e.preventDefault();
             const text = this.chatInput.value.trim();
             if (text.length > 0) {
-                this.socket.emit('chat_message', { text });
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    this.ws.send(JSON.stringify({ event: 'chat_message', data: { text } }));
+}
                 this.chatInput.value = '';
             }
         });
@@ -510,10 +517,11 @@ class Game {
         this.playerLabel = null;
         
         console.log("Emitting player_join event");
-        this.socket.emit('player_join', {
-            name: this.playerName,
-            color: color
-        });
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    this.ws.send(JSON.stringify({ event: 'player_join', data: { name: this.playerName, color } }));
+} else {
+    console.warn('[WebSocket] Not connected, cannot send player_join');
+}
         
         this.isActive = true;
         this.controls.isActive = true;
@@ -555,13 +563,22 @@ class Game {
     }
 
     addPlayer(playerData) {
+        if (!playerData || !playerData.id || !playerData.name) {
+            console.error('[addPlayer] Missing player id or name:', playerData);
+            return;
+        }
         if (this.players.has(playerData.id)) return;
 
-        console.log("Adding player:", playerData);
+        console.log("[addPlayer] Adding player:", playerData);
 
         const mesh = this.createPlayerMesh(playerData.color);
         const label = this.createPlayerLabel(playerData.name);
         mesh.add(label);
+        if (!mesh) {
+            console.error('[addPlayer] Mesh creation failed for player:', playerData);
+        } else {
+            console.log('[addPlayer] Mesh created:', mesh);
+        }
 
         // Set initial position to origin (center of world)
         let pos = { x: 0, y: 1, z: 0 };
@@ -726,7 +743,9 @@ class Game {
                 Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||
                 Math.abs(newPos.y - this.lastSentPos.y) > 0.01 ||
                 Math.abs(newPos.z - this.lastSentPos.z) > 0.01) {
-                this.socket.emit('player_move', { position: newPos });
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    this.ws.send(JSON.stringify({ event: 'player_move', data: { position: newPos } }));
+}
                 this.lastSentPos = { ...newPos };
             }
         }

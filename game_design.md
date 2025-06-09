@@ -104,8 +104,7 @@ A 3D multiplayer game where players can interact in a shared virtual environment
 - `requestAnimationFrame` used for all animation/game loops
 
 ### 3.2 Backend
-- Python Flask server (optionally upgrade to FastAPI for async handling)
-- WebSocket support via Socket.IO
+- Python FastAPI server (optionally upgrade to FastAPI for async handling)
 - JSON-based communication
 - Modular code with separation for auth, game logic, object handling
 
