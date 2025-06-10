@@ -140,4 +140,4 @@ async def websocket_endpoint(websocket: WebSocket):
             await safe_broadcast({"event": "player_disconnected", "id": sid, "name": players.get(sid, {}).get('name', 'UNKNOWN')})
             await safe_broadcast({"event": "player_count_update", "count": len(players)})
             await broadcast_global_state()
-        connected_websockets.remove(websocket)
+        connected_websockets.discard(websocket)

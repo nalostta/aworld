@@ -37,8 +37,17 @@ RUN adduser \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the source code
+COPY . .
+
 # Switch to the non-privileged user to run the application.
 USER appuser
+
+# Expose the port for uvicorn
+EXPOSE 5001
+
+# Run the FastAPI app with uvicorn
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001"]
 
 # Copy the source code into the container.
 COPY . .
@@ -46,5 +55,3 @@ COPY . .
 # Expose the port that the application listens on.
 EXPOSE 5001
 
-# Run the application.
-CMD python server.py
