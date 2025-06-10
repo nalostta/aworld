@@ -201,7 +201,8 @@ class PlayerControls {
         return { x: dx, y: this.verticalVelocity, z: dz };
     }
 
-    update() {
+    // update(y) - y is the current vertical position of the player
+    update(y = 0) {
         if (!this.isActive) return { x: 0, y: 0, z: 0 };
 
         // Handle jumping
@@ -215,8 +216,8 @@ class PlayerControls {
             this.verticalVelocity -= this.gravity;
         }
 
-        // Ground check
-        if (this.verticalVelocity < 0) {
+        // Ground check: only set grounded when y <= 0 (at or below ground)
+        if ((y + this.verticalVelocity) <= 0) {
             this.verticalVelocity = 0;
             this.isGrounded = true;
         }

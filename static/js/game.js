@@ -379,20 +379,24 @@ this.connectWebSocket();
                     (msg.data || []).forEach(player => this.addPlayer(player));
                     break;
                 case 'global_state_update':
-                    this.handleGlobalStateUpdate(msg.data);
+                    // The backend sends {event: ..., players: [...]}
+                    this.handleGlobalStateUpdate(msg.players);
                     break;
                 case 'player_count_update':
-                    this.updatePlayerCount(msg.data.count);
+                    // The backend sends {event: ..., count: ...} (not in data)
+                    this.updatePlayerCount(msg.count);
                     break;
                 case 'player_disconnected':
-                    this.removePlayer(msg.data.id);
+                    // The backend sends {event: ..., id: ..., name: ...}
+                    this.removePlayer(msg.id);
                     break;
                 case 'chat_message':
                     this.showChatBubble(msg.data);
                     break;
                 case 'wall_display_update':
-                    if (msg.data && typeof msg.data.content === 'string') {
-                        this.updateWallDisplay(msg.data.content);
+                    // The backend sends {event: ..., content: ...}
+                    if (typeof msg.content === 'string') {
+                        this.updateWallDisplay(msg.content);
                     }
                     break;
                 default:
@@ -436,7 +440,19 @@ handleGlobalStateUpdate(players) {
         // Update position
         const obj = this.players.get(player.id);
         if (obj && obj.mesh) {
-            obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+            // For local player, only correct if server disagrees (authoritative snap)
+            if (player.id === this.playerId) {
+                const meshPos = obj.mesh.position;
+                if (Math.abs(meshPos.x - player.position.x) > 0.05 ||
+                    Math.abs(meshPos.y - (player.position.y + 1)) > 0.05 ||
+                    Math.abs(meshPos.z - player.position.z) > 0.05) {
+                    // Snap to server position if out of sync
+                    obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+                }
+            } else {
+                // For all other players, always update
+                obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+            }
             // Handle chat bubble
             if (player.chat_message && player.chat_message.length > 0) {
                 this.showChatBubble({ id: player.id, text: player.chat_message });
@@ -709,43 +725,26 @@ handleGlobalStateUpdate(players) {
             return;
         }
 
-        // Only send position if local player mesh exists
+        // Only process movement if local player mesh exists
         if (this.playerMesh && this.playerId) {
             // Calculate movement using controls
             const movement = this.controls.update();
-            // --- Cuboid collision detection ---
+            // Calculate intended new position
             let newX = this.playerMesh.position.x + movement.x;
             let newY = this.playerMesh.position.y - 1 + movement.y;
             let newZ = this.playerMesh.position.z + movement.z;
-            // Cuboid AABB collision
-            const b = this.cuboid;
-            const margin = 0.6; // slightly larger than player radius
-            const minX = b.x - b.width/2 - margin;
-            const maxX = b.x + b.width/2 + margin;
-            const minY = 0; // on ground
-            const maxY = b.y + b.height/2 + margin;
-            const minZ = b.z - b.depth/2 - margin;
-            const maxZ = b.z + b.depth/2 + margin;
-            // If next position would be inside cuboid, block movement
-            if (
-                newX > minX && newX < maxX &&
-                newY > minY && newY < maxY &&
-                newZ > minZ && newZ < maxZ
-            ) {
-                // Block movement: revert to current position
-                newX = this.playerMesh.position.x;
-                newY = this.playerMesh.position.y - 1;
-                newZ = this.playerMesh.position.z;
-            }
+            // (Optionally keep local collision for UX, but server is source of truth)
             const newPos = { x: newX, y: newY, z: newZ };
-            // Only send if moved
+            // Optimistically update local mesh immediately
+            this.playerMesh.position.set(newPos.x, newPos.y + 1, newPos.z);
+            // Send intended movement to server
             if (!this.lastSentPos ||
                 Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||
                 Math.abs(newPos.y - this.lastSentPos.y) > 0.01 ||
                 Math.abs(newPos.z - this.lastSentPos.z) > 0.01) {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-    this.ws.send(JSON.stringify({ event: 'player_move', data: { position: newPos } }));
-}
+                    this.ws.send(JSON.stringify({ event: 'player_move', data: { position: newPos } }));
+                }
                 this.lastSentPos = { ...newPos };
             }
         }
