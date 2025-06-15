@@ -47,7 +47,7 @@ USER appuser
 EXPOSE 5001
 
 # Run the FastAPI app with uvicorn
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001", "--ssl-keyfile", "certs/key.pem", "--ssl-certfile", "certs/cert.pem"]
 
 # Copy the source code into the container.
 COPY . .
