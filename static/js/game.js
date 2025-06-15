@@ -564,7 +564,7 @@ animate() {
         );
         
         // If error is small, trust our prediction. If large, reconcile.
-        if (positionError > 0.5) { // 0.5 unit tolerance
+        if (positionError > 1.5) { // 0.5 unit tolerance
             console.log('Reconciling position error:', positionError);
             
             // Set to server position
