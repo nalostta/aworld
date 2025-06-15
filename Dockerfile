@@ -9,6 +9,9 @@
 ARG PYTHON_VERSION=3.9.12
 FROM python:${PYTHON_VERSION}-slim AS base
 
+# Install Nginx
+RUN apt-get update && apt-get install -y nginx && rm -rf /var/lib/apt/lists/*
+
 # Prevents Python from writing pyc files.
 ENV PYTHONDONTWRITEBYTECODE=1
 
@@ -37,16 +40,19 @@ RUN adduser \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy certs and source code, then set permissions on certs
+# Copy app code and configs
 COPY . .
-RUN chmod 644 /app/certs/*.pem
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
 
 # Switch to the non-privileged user to run the application.
 USER appuser
 
-# Expose the port for uvicorn
-EXPOSE 5001
+# Expose the port for Nginx
+EXPOSE 8080
 
-# Run the FastAPI app with uvicorn (use absolute paths for certs)
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001", "--ssl-keyfile", "/app/certs/key.pem", "--ssl-certfile", "/app/certs/cert.pem"]
+# Run the start script
+CMD ["/start.sh"]
+
 
