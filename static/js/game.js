@@ -399,6 +399,9 @@ this.connectWebSocket();
                         this.updateWallDisplay(msg.content);
                     }
                     break;
+                case 'server_position_update':
+                    this.reconcileServerPosition(msg.data.position, msg.data.timestamp, msg.data.sequence);
+                    break;
                 default:
                     console.warn('[WebSocket] Unknown event:', msg.event, msg);
             }
@@ -465,6 +468,123 @@ handleGlobalStateUpdate(players) {
     });
     this.updatePlayerCount(players.length);
 }
+
+animate() {
+    requestAnimationFrame(() => this.animate());
+
+    if (!this.isActive) return;
+
+    // Update controls and get movement vector
+    const movement = this.controls.update(this.playerMesh ? this.playerMesh.position.y : 0);
+
+    // CLIENT-SIDE PREDICTION: Update local player position immediately
+    if (this.playerMesh && (movement.x !== 0 || movement.y !== 0 || movement.z !== 0)) {
+        // Apply movement locally for immediate response
+        const newPos = {
+            x: this.playerMesh.position.x + movement.x,
+            y: Math.max(0, this.playerMesh.position.y + movement.y), // Ground clamp
+            z: this.playerMesh.position.z + movement.z
+        };
+        
+        // Update local position immediately
+        this.playerMesh.position.set(newPos.x, newPos.y, newPos.z);
+        
+        // Store this prediction with a timestamp for later reconciliation
+        const timestamp = Date.now();
+        this.clientPredictions = this.clientPredictions || [];
+        this.clientPredictions.push({
+            timestamp,
+            position: { ...newPos },
+            input: { ...movement }
+        });
+        
+        // Limit prediction history (keep last 60 frames at 60fps = 1 second)
+        if (this.clientPredictions.length > 60) {
+            this.clientPredictions.shift();
+        }
+        
+        // Send input to server (not position) - reduced frequency
+        if (!this.lastInputSent || Date.now() - this.lastInputSent > 50) { // 20 times per second
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ 
+                    event: 'player_input', 
+                    data: { 
+                        input: movement,
+                        timestamp: timestamp,
+                        sequence: this.inputSequence = (this.inputSequence || 0) + 1
+                    } 
+                }));
+            }
+            this.lastInputSent = Date.now();
+        }
+    }
+
+    // Camera tracking and rotation for local player
+    if (this.playerMesh) {
+        // Camera offset (distance and height from player)
+        const cameraDistance = 10;
+        const cameraHeight = 5;
+        const rot = this.controls.cameraRotation || 0;
+        // Spherical coordinates
+        const offsetX = Math.sin(rot) * cameraDistance;
+        const offsetZ = Math.cos(rot) * cameraDistance;
+        this.camera.position.set(
+            this.playerMesh.position.x + offsetX,
+            this.playerMesh.position.y + cameraHeight,
+            this.playerMesh.position.z + offsetZ
+        );
+        this.camera.lookAt(this.playerMesh.position);
+    }
+
+    this.updatePlayerInfo();
+    this.renderer.render(this.scene, this.camera);
+}
+
+    // SERVER RECONCILIATION: Handle authoritative position updates from server
+    reconcileServerPosition(serverPosition, serverTimestamp, serverSequence) {
+        if (!this.playerMesh || !this.clientPredictions) return;
+        
+        // Find the prediction that matches this server update
+        const predictionIndex = this.clientPredictions.findIndex(p => 
+            Math.abs(p.timestamp - serverTimestamp) < 100 // 100ms tolerance
+        );
+        
+        if (predictionIndex === -1) {
+            // No matching prediction found, accept server position
+            this.playerMesh.position.set(serverPosition.x, serverPosition.y, serverPosition.z);
+            return;
+        }
+        
+        // Check if our prediction was significantly wrong
+        const prediction = this.clientPredictions[predictionIndex];
+        const positionError = Math.sqrt(
+            Math.pow(prediction.position.x - serverPosition.x, 2) +
+            Math.pow(prediction.position.y - serverPosition.y, 2) +
+            Math.pow(prediction.position.z - serverPosition.z, 2)
+        );
+        
+        // If error is small, trust our prediction. If large, reconcile.
+        if (positionError > 0.5) { // 0.5 unit tolerance
+            console.log('Reconciling position error:', positionError);
+            
+            // Set to server position
+            this.playerMesh.position.set(serverPosition.x, serverPosition.y, serverPosition.z);
+            
+            // Re-apply all inputs that happened after the server timestamp
+            const replayPredictions = this.clientPredictions.slice(predictionIndex + 1);
+            for (const replayPrediction of replayPredictions) {
+                const newPos = {
+                    x: this.playerMesh.position.x + replayPrediction.input.x,
+                    y: Math.max(0, this.playerMesh.position.y + replayPrediction.input.y),
+                    z: this.playerMesh.position.z + replayPrediction.input.z
+                };
+                this.playerMesh.position.set(newPos.x, newPos.y, newPos.z);
+            }
+        }
+        
+        // Clean up old predictions
+        this.clientPredictions = this.clientPredictions.slice(predictionIndex + 1);
+    }
 
     setupUI() {
         const startScreen = document.getElementById('start-screen');
@@ -715,61 +835,7 @@ handleGlobalStateUpdate(players) {
         }
     }
 
-    animate() {
-        requestAnimationFrame(() => this.animate());
-
-        // Prevent movement if chat is focused
-        if (this.isChatFocused) {
-            this.updatePlayerInfo();
-            this.renderer.render(this.scene, this.camera);
-            return;
-        }
-
-        // Only process movement if local player mesh exists
-        if (this.playerMesh && this.playerId) {
-            // Calculate movement using controls
-            const movement = this.controls.update();
-            // Calculate intended new position
-            let newX = this.playerMesh.position.x + movement.x;
-            let newY = this.playerMesh.position.y - 1 + movement.y;
-            let newZ = this.playerMesh.position.z + movement.z;
-            // (Optionally keep local collision for UX, but server is source of truth)
-            const newPos = { x: newX, y: newY, z: newZ };
-            // Optimistically update local mesh immediately
-            this.playerMesh.position.set(newPos.x, newPos.y + 1, newPos.z);
-            // Send intended movement to server
-            if (!this.lastSentPos ||
-                Math.abs(newPos.x - this.lastSentPos.x) > 0.01 ||
-                Math.abs(newPos.y - this.lastSentPos.y) > 0.01 ||
-                Math.abs(newPos.z - this.lastSentPos.z) > 0.01) {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ event: 'player_move', data: { position: newPos } }));
-                }
-                this.lastSentPos = { ...newPos };
-            }
-        }
-
-        // Camera tracking and rotation for local player
-        if (this.playerMesh) {
-            // Camera offset (distance and height from player)
-            const cameraDistance = 10;
-            const cameraHeight = 5;
-            const rot = this.controls.cameraRotation || 0;
-            // Spherical coordinates
-            const offsetX = Math.sin(rot) * cameraDistance;
-            const offsetZ = Math.cos(rot) * cameraDistance;
-            this.camera.position.set(
-                this.playerMesh.position.x + offsetX,
-                this.playerMesh.position.y + cameraHeight,
-                this.playerMesh.position.z + offsetZ
-            );
-            this.camera.lookAt(this.playerMesh.position);
-        }
-
-        // Do NOT update playerMesh position here; update from global state only
-        this.updatePlayerInfo();
-        this.renderer.render(this.scene, this.camera);
-    }
+    // --- Mobile Controls Integration ---
 }
 
 // --- Mobile Controls Integration ---

@@ -108,7 +108,50 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"event": "current_players", "players": list(players.values())})
                 await websocket.send_json({"event": "wall_display_update", "content": wall_display_content})
                 await broadcast_global_state()
+            elif event == "player_input":
+                # Handle input-based movement (more responsive)
+                if sid in players:
+                    input_data = payload.get('input')
+                    timestamp = payload.get('timestamp', time.time() * 1000)
+                    sequence = payload.get('sequence', 0)
+                    
+                    if input_data:
+                        player = players[sid]
+                        
+                        # Apply movement on server (same logic as client prediction)
+                        new_x = player['position']['x'] + input_data['x']
+                        new_z = player['position']['z'] + input_data['z']
+                        
+                        # Handle jumping and gravity on server
+                        if input_data['y'] > 0 and player['position']['y'] <= 0.01 and abs(player['vy']) < 1e-5:
+                            player['vy'] = JUMP_VELOCITY
+                        
+                        # Apply gravity
+                        player['vy'] -= GRAVITY
+                        new_y = player['position']['y'] + player['vy']
+                        
+                        # Ground clamp
+                        if new_y <= 0:
+                            new_y = 0
+                            player['vy'] = 0
+                        
+                        # Update server position
+                        player['position'] = {'x': new_x, 'y': new_y, 'z': new_z}
+                        
+                        # Send authoritative position back to the player for reconciliation
+                        await websocket.send_json({
+                            "event": "server_position_update",
+                            "data": {
+                                "position": player['position'],
+                                "timestamp": timestamp,
+                                "sequence": sequence
+                            }
+                        })
+                        
+                        # Broadcast position to other players
+                        await broadcast_global_state()
             elif event == "player_move":
+                # LEGACY: Keep for backward compatibility
                 if sid in players:
                     pos = payload.get('position')
                     player = players[sid]
