@@ -37,8 +37,9 @@ RUN adduser \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the source code
+# Copy certs and source code, then set permissions on certs
 COPY . .
+RUN chmod 644 /app/certs/*.pem
 
 # Switch to the non-privileged user to run the application.
 USER appuser
@@ -46,12 +47,6 @@ USER appuser
 # Expose the port for uvicorn
 EXPOSE 5001
 
-# Run the FastAPI app with uvicorn
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001", "--ssl-keyfile", "certs/key.pem", "--ssl-certfile", "certs/cert.pem"]
-
-# Copy the source code into the container.
-COPY . .
-
-# Expose the port that the application listens on.
-EXPOSE 5001
+# Run the FastAPI app with uvicorn (use absolute paths for certs)
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5001", "--ssl-keyfile", "/app/certs/key.pem", "--ssl-certfile", "/app/certs/cert.pem"]
 
