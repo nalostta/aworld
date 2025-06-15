@@ -14,8 +14,9 @@ class PlayerControls {
         this.moveSpeed = 0.1;
         this.sprintMultiplier = 2;
         this.crouchMultiplier = 0.5;
-        this.jumpForce = 0.2;
-        this.gravity = 0.01;
+        // 🔧 FIX: Match server physics constants exactly (server.py lines 20-21)
+        this.jumpForce = 0.25;     // Was 0.2, now matches SERVER_JUMP_VELOCITY = 0.25
+        this.gravity = 0.02;       // Was 0.01, now matches SERVER_GRAVITY = 0.02
         this.verticalVelocity = 0;
         this.isGrounded = true;
         this.isActive = true; // Default to active
@@ -216,10 +217,14 @@ class PlayerControls {
             this.verticalVelocity -= this.gravity;
         }
 
-        // Ground check: only set grounded when y <= 0 (at or below ground)
-        if ((y + this.verticalVelocity) <= 0) {
+        // 🔧 FIX: Ground check logic to match server exactly (server.py line 166)
+        // Calculate new position first, then check ground
+        const newY = y + this.verticalVelocity;
+        if (newY <= 0) {
             this.verticalVelocity = 0;
             this.isGrounded = true;
+        } else {
+            this.isGrounded = false;
         }
 
         return this.getMovementVector();

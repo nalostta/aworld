@@ -46,6 +46,24 @@ class Game {
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         console.log('[DEBUG] Game constructor: scene created', this.scene);
 
+        // PERFORMANCE MONITORING
+        this.performanceMetrics = {
+            roundTripTimes: [],
+            reconciliationCount: 0,
+            totalInputsSent: 0,
+            lastReconciliationTime: 0,
+            averageRTT: 0,
+            maxRTT: 0,
+            serverProcessingTime: 0,
+            networkLatency: 0,
+            lastFrameTime: performance.now(),
+            frameCount: 0,
+            fps: 0
+        };
+        
+        // Debug display element
+        this.createDebugDisplay();
+
         // Handle window resize
         window.addEventListener('resize', () => {
             this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -400,7 +418,14 @@ this.connectWebSocket();
                     }
                     break;
                 case 'server_position_update':
-                    this.reconcileServerPosition(msg.data.position, msg.data.timestamp, msg.data.sequence);
+                    // 🔧 FIX: Track sequence numbers to detect out-of-order responses
+                    const sequence = msg.data.sequence;
+                    if (this.lastReceivedSequence && sequence < this.lastReceivedSequence) {
+                        console.warn(`⚠️  Out-of-order response: expected >= ${this.lastReceivedSequence}, got ${sequence}`);
+                    }
+                    this.lastReceivedSequence = Math.max(this.lastReceivedSequence || 0, sequence);
+                    
+                    this.reconcileServerPosition(msg.data.position, msg.data.timestamp, msg.data.sequence, msg.data.server_processing_time);
                     break;
                 default:
                     console.warn('[WebSocket] Unknown event:', msg.event, msg);
@@ -506,6 +531,11 @@ animate() {
         // Send input to server (not position) - reduced frequency
         if (!this.lastInputSent || Date.now() - this.lastInputSent > 50) { // 20 times per second
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                // Track RTT for performance monitoring
+                const inputTimestamp = performance.now();
+                this.pendingInputs = this.pendingInputs || new Map();
+                this.pendingInputs.set(timestamp, inputTimestamp);
+                
                 this.ws.send(JSON.stringify({ 
                     event: 'player_input', 
                     data: { 
@@ -514,6 +544,8 @@ animate() {
                         sequence: this.inputSequence = (this.inputSequence || 0) + 1
                     } 
                 }));
+                
+                this.performanceMetrics.totalInputsSent++;
             }
             this.lastInputSent = Date.now();
         }
@@ -538,10 +570,11 @@ animate() {
 
     this.updatePlayerInfo();
     this.renderer.render(this.scene, this.camera);
+    this.updatePerformanceMetrics();
 }
 
     // SERVER RECONCILIATION: Handle authoritative position updates from server
-    reconcileServerPosition(serverPosition, serverTimestamp, serverSequence) {
+    reconcileServerPosition(serverPosition, serverTimestamp, serverSequence, serverProcessingTime) {
         if (!this.playerMesh || !this.clientPredictions) return;
         
         // Find the prediction that matches this server update
@@ -563,9 +596,14 @@ animate() {
             Math.pow(prediction.position.z - serverPosition.z, 2)
         );
         
-        // If error is small, trust our prediction. If large, reconcile.
-        if (positionError > 0.5) { // 0.5 unit tolerance
-            console.log('Reconciling position error:', positionError);
+        // 🔧 FIX: More lenient reconciliation threshold to account for physics differences
+        const dynamicThreshold = Math.max(0.1, (Math.abs(prediction.input.x) + Math.abs(prediction.input.z)) * 5);
+        const reconciliationThreshold = dynamicThreshold;
+        
+        if (positionError > reconciliationThreshold) { // Was 0.5 unit tolerance
+            console.log(`🔄 Reconciling position error: ${positionError.toFixed(3)} > ${reconciliationThreshold.toFixed(3)}`);
+            this.performanceMetrics.reconciliationCount++;
+            this.performanceMetrics.lastReconciliationTime = performance.now();
             
             // Set to server position
             this.playerMesh.position.set(serverPosition.x, serverPosition.y, serverPosition.z);
@@ -584,6 +622,91 @@ animate() {
         
         // Clean up old predictions
         this.clientPredictions = this.clientPredictions.slice(predictionIndex + 1);
+        
+        // Update RTT metrics
+        const inputTimestamp = this.pendingInputs.get(serverTimestamp);
+        if (inputTimestamp) {
+            const totalRTT = performance.now() - inputTimestamp;
+            const networkLatency = (totalRTT - serverProcessingTime) / 2; // Estimate one-way latency
+            
+            this.performanceMetrics.roundTripTimes.push(totalRTT);
+            this.performanceMetrics.serverProcessingTime = serverProcessingTime;
+            this.performanceMetrics.networkLatency = networkLatency;
+            
+            // Keep only last 50 RTT samples
+            if (this.performanceMetrics.roundTripTimes.length > 50) {
+                this.performanceMetrics.roundTripTimes.shift();
+            }
+            
+            this.pendingInputs.delete(serverTimestamp);
+        }
+    }
+
+    createDebugDisplay() {
+        // Create debug overlay
+        const debugDiv = document.createElement('div');
+        debugDiv.id = 'debug-overlay';
+        debugDiv.style.cssText = `
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.8);
+            color: #00ff00;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            border-radius: 5px;
+            z-index: 1000;
+            min-width: 250px;
+        `;
+        document.body.appendChild(debugDiv);
+        this.debugDisplay = debugDiv;
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'p') {
+                if (this.debugDisplay.style.display === 'none') {
+                    this.debugDisplay.style.display = 'block';
+                } else {
+                    this.debugDisplay.style.display = 'none';
+                }
+            }
+        });
+    }
+
+    updatePerformanceMetrics() {
+        const now = performance.now();
+        
+        // Calculate FPS
+        this.performanceMetrics.frameCount++;
+        if (now - this.performanceMetrics.lastFrameTime >= 1000) {
+            this.performanceMetrics.fps = this.performanceMetrics.frameCount;
+            this.performanceMetrics.frameCount = 0;
+            this.performanceMetrics.lastFrameTime = now;
+        }
+        
+        // Calculate average RTT
+        if (this.performanceMetrics.roundTripTimes.length > 0) {
+            const sum = this.performanceMetrics.roundTripTimes.reduce((a, b) => a + b, 0);
+            this.performanceMetrics.averageRTT = sum / this.performanceMetrics.roundTripTimes.length;
+            this.performanceMetrics.maxRTT = Math.max(...this.performanceMetrics.roundTripTimes);
+        }
+        
+        // Update debug display
+        if (this.debugDisplay) {
+            this.debugDisplay.innerHTML = `
+                <div><strong>PERFORMANCE METRICS</strong></div>
+                <div>FPS: ${this.performanceMetrics.fps}</div>
+                <div>Avg RTT: ${this.performanceMetrics.averageRTT.toFixed(1)}ms</div>
+                <div>Max RTT: ${this.performanceMetrics.maxRTT.toFixed(1)}ms</div>
+                <div>Network Latency: ${this.performanceMetrics.networkLatency.toFixed(1)}ms</div>
+                <div>Server Processing: ${this.performanceMetrics.serverProcessingTime.toFixed(1)}ms</div>
+                <div>Reconciliations: ${this.performanceMetrics.reconciliationCount}</div>
+                <div>Inputs Sent: ${this.performanceMetrics.totalInputsSent}</div>
+                <div>Predictions: ${this.clientPredictions ? this.clientPredictions.length : 0}</div>
+                <div><strong>Connection Status:</strong></div>
+                <div>WebSocket: ${this.ws ? this.ws.readyState === 1 ? 'OPEN' : 'CLOSED' : 'NULL'}</div>
+                <div><strong>Press 'P' to toggle this display</strong></div>
+            `;
+        }
     }
 
     setupUI() {

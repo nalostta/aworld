@@ -7,6 +7,7 @@ import os
 import time
 from typing import Dict, Any
 import asyncio
+import psutil  # For monitoring CPU/memory
 
 app = FastAPI()
 
@@ -19,6 +20,16 @@ CHAT_EXPIRY_SECONDS = 15
 GRAVITY = 0.02  # units per tick
 JUMP_VELOCITY = 0.25  # units per jump
 connected_websockets = set()
+
+# Performance monitoring
+server_metrics = {
+    'total_inputs_processed': 0,
+    'total_reconciliations_sent': 0,
+    'average_processing_time': 0,
+    'max_processing_time': 0,
+    'processing_times': [],
+    'start_time': time.time()
+}
 
 # Utility: send to all, removing closed sockets
 async def safe_broadcast(message):
@@ -52,9 +63,28 @@ async def broadcast_global_state():
     prune_expired_chats()
     await safe_broadcast({"event": "global_state_update", "players": list(players.values())})
 
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
+@app.get("/")
+async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/health")
+async def health():
+    """Health check endpoint with performance metrics"""
+    uptime = time.time() - server_metrics['start_time']
+    return {
+        "status": "healthy",
+        "uptime_seconds": uptime,
+        "connected_players": len(players),
+        "server_metrics": {
+            "total_inputs_processed": server_metrics['total_inputs_processed'],
+            "total_reconciliations_sent": server_metrics['total_reconciliations_sent'],
+            "average_processing_time_ms": server_metrics['average_processing_time'],
+            "max_processing_time_ms": server_metrics['max_processing_time'],
+            "current_cpu_percent": psutil.cpu_percent(),
+            "current_memory_percent": psutil.virtual_memory().percent,
+            "inputs_per_second": server_metrics['total_inputs_processed'] / uptime if uptime > 0 else 0
+        }
+    }
 
 # API to update wall display (admin or server-side only)
 from pydantic import BaseModel
@@ -109,8 +139,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"event": "wall_display_update", "content": wall_display_content})
                 await broadcast_global_state()
             elif event == "player_input":
-                # Handle input-based movement (more responsive)
+                # NEW: Handle input-based movement (more responsive)
                 if sid in players:
+                    start_time = time.perf_counter()  # High precision timing
+                    
                     input_data = payload.get('input')
                     timestamp = payload.get('timestamp', time.time() * 1000)
                     sequence = payload.get('sequence', 0)
@@ -138,18 +170,36 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Update server position
                         player['position'] = {'x': new_x, 'y': new_y, 'z': new_z}
                         
+                        # Calculate processing time
+                        processing_time = (time.perf_counter() - start_time) * 1000  # Convert to ms
+                        
+                        # Update server metrics
+                        server_metrics['total_inputs_processed'] += 1
+                        server_metrics['processing_times'].append(processing_time)
+                        if len(server_metrics['processing_times']) > 100:  # Keep last 100 samples
+                            server_metrics['processing_times'].pop(0)
+                        server_metrics['average_processing_time'] = sum(server_metrics['processing_times']) / len(server_metrics['processing_times'])
+                        server_metrics['max_processing_time'] = max(server_metrics['processing_times'])
+                        
                         # Send authoritative position back to the player for reconciliation
                         await websocket.send_json({
                             "event": "server_position_update",
                             "data": {
                                 "position": player['position'],
                                 "timestamp": timestamp,
-                                "sequence": sequence
+                                "sequence": sequence,
+                                "server_processing_time": processing_time,  # Include processing time
+                                "server_cpu_percent": psutil.cpu_percent(),
+                                "server_memory_percent": psutil.virtual_memory().percent
                             }
                         })
                         
-                        # Broadcast position to other players
-                        await broadcast_global_state()
+                        server_metrics['total_reconciliations_sent'] += 1
+                        
+                        # 🔧 FIX: Reduce global state broadcast frequency to prevent message conflicts
+                        # Broadcast position to other players much less frequently to avoid interfering with reconciliation
+                        if server_metrics['total_inputs_processed'] % 10 == 0:  # Every 10th input instead of 3rd
+                            await broadcast_global_state()
             elif event == "player_move":
                 # LEGACY: Keep for backward compatibility
                 if sid in players:
