@@ -46,6 +46,17 @@ class Game {
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         console.log('[DEBUG] Game constructor: scene created', this.scene);
 
+        // Performance and network monitoring
+        this.packetsSent = 0;
+        this.packetsReceived = 0;
+        this.rtts = [];
+        this.averageRTT = 0;
+        this.lastPingTime = 0;
+        this.networkQuality = 'good'; // good, fair, poor
+        this.frameCount = 0;
+        this.lastFrameTime = 0;
+        this.fps = 0;
+
         // Handle window resize
         window.addEventListener('resize', () => {
             this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -119,6 +130,7 @@ this.connectWebSocket();
         // Socket events now handled by WebSocket setup in connectWebSocket
         this.setupUI();
         this.animate();
+        this.startNetworkHealthMonitoring();
     }
 
     /**
@@ -372,12 +384,6 @@ this.connectWebSocket();
                 return;
             }
             switch (msg.event) {
-                case 'player_joined':
-                    this.addPlayer(msg.data);
-                    break;
-                case 'current_players':
-                    (msg.data || []).forEach(player => this.addPlayer(player));
-                    break;
                 case 'global_state_update':
                     // The backend sends {event: ..., players: [...]}
                     this.handleGlobalStateUpdate(msg.players);
@@ -386,21 +392,10 @@ this.connectWebSocket();
                     // The backend sends {event: ..., count: ...} (not in data)
                     this.updatePlayerCount(msg.count);
                     break;
-                case 'player_disconnected':
-                    // The backend sends {event: ..., id: ..., name: ...}
-                    this.removePlayer(msg.id);
-                    break;
-                case 'chat_message':
-                    this.showChatBubble(msg.data);
-                    break;
-                case 'wall_display_update':
-                    // The backend sends {event: ..., content: ...}
-                    if (typeof msg.content === 'string') {
-                        this.updateWallDisplay(msg.content);
-                    }
-                    break;
-                case 'server_position_update':
-                    this.reconcileServerPosition(msg.data.position, msg.data.timestamp, msg.data.sequence);
+                case 'ping':
+                    // The backend sends {event: ..., timestamp: ...}
+                    const rtt = Date.now() - msg.data.timestamp;
+                    this.updateRTT(rtt);
                     break;
                 default:
                     console.warn('[WebSocket] Unknown event:', msg.event, msg);
@@ -427,91 +422,32 @@ this.connectWebSocket();
     };
 }
 
-handleGlobalStateUpdate(players) {
-    // Sync all sprites to global state
-    const newIds = new Set(players.map(p => p.id));
-    this.players.forEach((_, id) => {
-        if (!newIds.has(id)) {
-            this.removePlayer(id);
-        }
-    });
-    players.forEach(player => {
-        // Add if missing
-        if (!this.players.has(player.id)) {
-            this.addPlayer(player);
-        }
-        // Update position
-        const obj = this.players.get(player.id);
-        if (obj && obj.mesh) {
-            // For local player, only correct if server disagrees (authoritative snap)
-            if (player.id === this.playerId) {
-                const meshPos = obj.mesh.position;
-                if (Math.abs(meshPos.x - player.position.x) > 0.05 ||
-                    Math.abs(meshPos.y - (player.position.y + 1)) > 0.05 ||
-                    Math.abs(meshPos.z - player.position.z) > 0.05) {
-                    // Snap to server position if out of sync
-                    obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
-                }
-            } else {
-                // For all other players, always update
-                obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
-            }
-            // Handle chat bubble
-            if (player.chat_message && player.chat_message.length > 0) {
-                this.showChatBubble({ id: player.id, text: player.chat_message });
-            } else if (obj.bubble) {
-                // Remove expired bubble
-                obj.mesh.remove(obj.bubble);
-                obj.bubble = null;
-            }
-        }
-    });
-    this.updatePlayerCount(players.length);
-}
-
 animate() {
     requestAnimationFrame(() => this.animate());
-
     if (!this.isActive) return;
 
-    // Update controls and get movement vector
+    // Get movement from controls
     const movement = this.controls.update(this.playerMesh ? this.playerMesh.position.y : 0);
-
-    // CLIENT-SIDE PREDICTION: Update local player position immediately
+    
     if (this.playerMesh && (movement.x !== 0 || movement.y !== 0 || movement.z !== 0)) {
-        // Apply movement locally for immediate response
+        // Calculate new position
         const newPos = {
             x: this.playerMesh.position.x + movement.x,
-            y: Math.max(0, this.playerMesh.position.y + movement.y), // Ground clamp
+            y: Math.max(0, this.playerMesh.position.y + movement.y),
             z: this.playerMesh.position.z + movement.z
         };
         
-        // Update local position immediately
+        // Update local position immediately for responsiveness
         this.playerMesh.position.set(newPos.x, newPos.y, newPos.z);
         
-        // Store this prediction with a timestamp for later reconciliation
-        const timestamp = Date.now();
-        this.clientPredictions = this.clientPredictions || [];
-        this.clientPredictions.push({
-            timestamp,
-            position: { ...newPos },
-            input: { ...movement }
-        });
-        
-        // Limit prediction history (keep last 60 frames at 60fps = 1 second)
-        if (this.clientPredictions.length > 60) {
-            this.clientPredictions.shift();
-        }
-        
-        // Send input to server (not position) - reduced frequency
+        // Send position directly to server at reduced frequency
         if (!this.lastInputSent || Date.now() - this.lastInputSent > 50) { // 20 times per second
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.packetsSent++;
                 this.ws.send(JSON.stringify({ 
-                    event: 'player_input', 
+                    event: 'player_move', 
                     data: { 
-                        input: movement,
-                        timestamp: timestamp,
-                        sequence: this.inputSequence = (this.inputSequence || 0) + 1
+                        position: newPos
                     } 
                 }));
             }
@@ -537,53 +473,68 @@ animate() {
     }
 
     this.updatePlayerInfo();
+    this.updatePerformanceInfo();
     this.renderer.render(this.scene, this.camera);
 }
 
-    // SERVER RECONCILIATION: Handle authoritative position updates from server
-    reconcileServerPosition(serverPosition, serverTimestamp, serverSequence) {
-        if (!this.playerMesh || !this.clientPredictions) return;
-        
-        // Find the prediction that matches this server update
-        const predictionIndex = this.clientPredictions.findIndex(p => 
-            Math.abs(p.timestamp - serverTimestamp) < 100 // 100ms tolerance
-        );
-        
-        if (predictionIndex === -1) {
-            // No matching prediction found, accept server position
-            this.playerMesh.position.set(serverPosition.x, serverPosition.y, serverPosition.z);
-            return;
+updatePerformanceInfo() {
+    const now = Date.now();
+    this.frameCount++;
+    if (this.lastFrameTime) {
+        const elapsed = now - this.lastFrameTime;
+        this.fps = 1000 / elapsed;
+    }
+    this.lastFrameTime = now;
+    const debugInfo = document.getElementById('debug-info');
+    if (debugInfo) {
+        debugInfo.textContent = `FPS: ${this.fps.toFixed(2)} | Packets Sent: ${this.packetsSent} | Packets Received: ${this.packetsReceived} | RTT: ${this.averageRTT.toFixed(1)}ms`;
+    }
+}
+
+    updateRTT(rtt) {
+        // Store last 10 RTT measurements for averaging
+        this.rtts.push(rtt);
+        if (this.rtts.length > 10) {
+            this.rtts.shift();
         }
         
-        // Check if our prediction was significantly wrong
-        const prediction = this.clientPredictions[predictionIndex];
-        const positionError = Math.sqrt(
-            Math.pow(prediction.position.x - serverPosition.x, 2) +
-            Math.pow(prediction.position.y - serverPosition.y, 2) +
-            Math.pow(prediction.position.z - serverPosition.z, 2)
-        );
+        // Calculate moving average RTT
+        this.averageRTT = this.rtts.reduce((sum, r) => sum + r, 0) / this.rtts.length;
         
-        // If error is small, trust our prediction. If large, reconcile.
-        if (positionError > 1.5) { // 0.5 unit tolerance
-            console.log('Reconciling position error:', positionError);
-            
-            // Set to server position
-            this.playerMesh.position.set(serverPosition.x, serverPosition.y, serverPosition.z);
-            
-            // Re-apply all inputs that happened after the server timestamp
-            const replayPredictions = this.clientPredictions.slice(predictionIndex + 1);
-            for (const replayPrediction of replayPredictions) {
-                const newPos = {
-                    x: this.playerMesh.position.x + replayPrediction.input.x,
-                    y: Math.max(0, this.playerMesh.position.y + replayPrediction.input.y),
-                    z: this.playerMesh.position.z + replayPrediction.input.z
-                };
-                this.playerMesh.position.set(newPos.x, newPos.y, newPos.z);
+        // Assess network quality based on RTT and jitter
+        const jitter = this.calculateJitter();
+        if (this.averageRTT > 150 || jitter > 50) {
+            this.networkQuality = 'poor';
+        } else if (this.averageRTT > 80 || jitter > 25) {
+            this.networkQuality = 'fair';
+        } else {
+            this.networkQuality = 'good';
+        }
+    }
+
+    calculateJitter() {
+        if (this.rtts.length < 2) return 0;
+        
+        let jitterSum = 0;
+        for (let i = 1; i < this.rtts.length; i++) {
+            jitterSum += Math.abs(this.rtts[i] - this.rtts[i-1]);
+        }
+        
+        return jitterSum / (this.rtts.length - 1);
+    }
+
+    startNetworkHealthMonitoring() {
+        setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                // Send ping to measure RTT
+                const pingTime = Date.now();
+                this.lastPingTime = pingTime;
+                this.ws.send(JSON.stringify({ 
+                    event: 'ping', 
+                    data: { timestamp: pingTime } 
+                }));
             }
-        }
-        
-        // Clean up old predictions
-        this.clientPredictions = this.clientPredictions.slice(predictionIndex + 1);
+        }, 2000); // Ping every 2 seconds
     }
 
     setupUI() {
@@ -610,31 +561,33 @@ animate() {
 
         // Add focus/blur handlers for the game container
         const gameContainer = document.getElementById('game-container');
-        gameContainer.addEventListener('focus', () => this.handleVisibilityChange());
-        gameContainer.addEventListener('blur', () => this.handleVisibilityChange());
+        if (gameContainer) {
+            gameContainer.addEventListener('focus', () => this.handleVisibilityChange());
+            gameContainer.addEventListener('blur', () => this.handleVisibilityChange());
 
-        // Chat setup
-        this.chatMessages = document.getElementById('chat-messages');
-        this.chatForm = document.getElementById('chat-form');
-        this.chatInput = document.getElementById('chat-input');
-        this.chatInput.maxLength = 120;
-        this.isChatFocused = false;
-        this.chatInput.addEventListener('focus', () => {
-            this.isChatFocused = true;
-        });
-        this.chatInput.addEventListener('blur', () => {
+            // Chat setup
+            this.chatMessages = document.getElementById('chat-messages');
+            this.chatForm = document.getElementById('chat-form');
+            this.chatInput = document.getElementById('chat-input');
+            this.chatInput.maxLength = 120;
             this.isChatFocused = false;
-        });
-        this.chatForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const text = this.chatInput.value.trim();
-            if (text.length > 0) {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.chatInput.addEventListener('focus', () => {
+                this.isChatFocused = true;
+            });
+            this.chatInput.addEventListener('blur', () => {
+                this.isChatFocused = false;
+            });
+            this.chatForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const text = this.chatInput.value.trim();
+                if (text.length > 0) {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
     this.ws.send(JSON.stringify({ event: 'chat_message', data: { text } }));
 }
-                this.chatInput.value = '';
-            }
-        });
+                    this.chatInput.value = '';
+                }
+            });
+        }
     }
 
     startGame() {
@@ -833,6 +786,40 @@ animate() {
                 playerObj.bubble = null;
             }, 15000);
         }
+    }
+
+    handleGlobalStateUpdate(players) {
+        // Sync all sprites to global state
+        const newIds = new Set(players.map(p => p.id));
+        this.players.forEach((_, id) => {
+            if (!newIds.has(id)) {
+                this.removePlayer(id);
+            }
+        });
+        
+        players.forEach(player => {
+            // Add if missing
+            if (!this.players.has(player.id)) {
+                this.addPlayer(player);
+            }
+            // Update position
+            const obj = this.players.get(player.id);
+            if (obj && obj.mesh) {
+                // Always update all players to server position
+                obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+                
+                // Handle chat bubbles
+                if (player.chat_message && player.chat_message.length > 0) {
+                    this.showChatBubble({ id: player.id, text: player.chat_message });
+                } else if (obj.bubble) {
+                    // Remove expired bubble
+                    obj.mesh.remove(obj.bubble);
+                    obj.bubble = null;
+                }
+            }
+        });
+        
+        this.updatePlayerCount(players.length);
     }
 
     // --- Mobile Controls Integration ---

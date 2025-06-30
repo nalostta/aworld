@@ -7,6 +7,7 @@ import os
 import time
 from typing import Dict, Any
 import asyncio
+import psutil
 
 app = FastAPI()
 
@@ -16,8 +17,8 @@ templates = Jinja2Templates(directory="templates")
 players: Dict[str, Any] = {}
 wall_display_content = 'Welcome to AWorld!'
 CHAT_EXPIRY_SECONDS = 15
-GRAVITY = 0.02  # units per tick
-JUMP_VELOCITY = 0.25  # units per jump
+SERVER_GRAVITY = 0.02  # units per tick
+SERVER_JUMP_VELOCITY = 0.25  # units per jump
 connected_websockets = set()
 
 # Utility: send to all, removing closed sockets
@@ -33,13 +34,17 @@ async def safe_broadcast(message):
 
 # Store active players with position, vertical velocity, and chat info
 players = {}
+server_start_time = time.time()  # For uptime tracking
+last_broadcast_time = 0  # For broadcast rate limiting
+broadcast_count = 0  # Performance tracking
+broadcast_time_total = 0  # Performance tracking
 
 # --- Wall Display State ---
 wall_display_content = 'Welcome to AWorld!'
 
 CHAT_EXPIRY_SECONDS = 15
-GRAVITY = 0.02  # units per tick
-JUMP_VELOCITY = 0.25  # units per jump
+SERVER_GRAVITY = 0.02  # units per tick
+SERVER_JUMP_VELOCITY = 0.25  # units per jump
 
 def prune_expired_chats():
     now = time.time()
@@ -49,8 +54,18 @@ def prune_expired_chats():
             p['chat_expiry'] = None
 
 async def broadcast_global_state():
-    prune_expired_chats()
-    await safe_broadcast({"event": "global_state_update", "players": list(players.values())})
+    """Simple broadcast of all player states"""
+    global broadcast_count, broadcast_time_total
+    
+    if players:
+        start_time = time.time()
+        await safe_broadcast({
+            "event": "global_state_update", 
+            "players": list(players.values())
+        })
+        end_time = time.time()
+        broadcast_time_total += (end_time - start_time)
+        broadcast_count += 1
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -69,6 +84,27 @@ async def update_wall_display(req: WallDisplayRequest):
     # Broadcast to all websockets
     await safe_broadcast({"event": "wall_display_update", "content": req.content})
     return {"status": "ok"}
+
+@app.get("/health")
+async def health():
+    """Server health and performance metrics endpoint"""
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    cpu_percent = process.cpu_percent()
+    
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(time.time() - server_start_time, 2),
+        "players_count": len(players),
+        "websocket_connections": len(connected_websockets),
+        "memory_usage_mb": round(memory_info.rss / 1024 / 1024, 2),
+        "memory_peak_mb": round(memory_info.peak_wss / 1024 / 1024, 2) if hasattr(memory_info, 'peak_wss') else "N/A",
+        "cpu_percent": cpu_percent,
+        "broadcast_count": broadcast_count,
+        "broadcast_time_total": broadcast_time_total,
+        "broadcast_time_average": broadcast_time_total / broadcast_count if broadcast_count > 0 else 0,
+        "timestamp": time.time()
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -108,67 +144,34 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"event": "current_players", "players": list(players.values())})
                 await websocket.send_json({"event": "wall_display_update", "content": wall_display_content})
                 await broadcast_global_state()
-            elif event == "player_input":
-                # Handle input-based movement (more responsive)
+            elif event == "player_move":
+                # Handle direct position updates from client
                 if sid in players:
-                    input_data = payload.get('input')
-                    timestamp = payload.get('timestamp', time.time() * 1000)
-                    sequence = payload.get('sequence', 0)
-                    
-                    if input_data:
-                        player = players[sid]
+                    pos = payload.get('position')
+                    player = players[sid]
+                    if pos is not None:
+                        # Apply server-side physics for jumping and gravity
+                        current_y = player['position']['y']
+                        new_y = pos['y']
                         
-                        # Apply movement on server (same logic as client prediction)
-                        new_x = player['position']['x'] + input_data['x']
-                        new_z = player['position']['z'] + input_data['z']
+                        # Detect jump: if player is moving upward from ground
+                        if new_y > current_y + 0.1 and current_y <= 0.01:
+                            player['vy'] = SERVER_JUMP_VELOCITY
                         
-                        # Handle jumping and gravity on server
-                        if input_data['y'] > 0 and player['position']['y'] <= 0.01 and abs(player['vy']) < 1e-5:
-                            player['vy'] = JUMP_VELOCITY
-                        
-                        # Apply gravity
-                        player['vy'] -= GRAVITY
-                        new_y = player['position']['y'] + player['vy']
+                        # Apply gravity if player is in the air
+                        if player['position']['y'] > 0:
+                            player['vy'] -= SERVER_GRAVITY
+                            new_y = player['position']['y'] + player['vy']
                         
                         # Ground clamp
                         if new_y <= 0:
                             new_y = 0
                             player['vy'] = 0
                         
-                        # Update server position
-                        player['position'] = {'x': new_x, 'y': new_y, 'z': new_z}
-                        
-                        # Send authoritative position back to the player for reconciliation
-                        await websocket.send_json({
-                            "event": "server_position_update",
-                            "data": {
-                                "position": player['position'],
-                                "timestamp": timestamp,
-                                "sequence": sequence
-                            }
-                        })
-                        
-                        # Broadcast position to other players
-                        await broadcast_global_state()
-            elif event == "player_move":
-                # LEGACY: Keep for backward compatibility
-                if sid in players:
-                    pos = payload.get('position')
-                    player = players[sid]
-                    if pos is not None:
-                        # Detect jump: if y > ground and vy == 0, treat as jump
-                        if pos['y'] > 0.01 and player['position']['y'] <= 0.01 and abs(player['vy']) < 1e-5:
-                            player['vy'] = JUMP_VELOCITY
-                        # Apply gravity
-                        player['vy'] -= GRAVITY
-                        # Update y position
-                        new_y = player['position']['y'] + player['vy']
-                        # Clamp to ground
-                        if new_y <= 0:
-                            new_y = 0
-                            player['vy'] = 0
-                        # Update position
+                        # Update position with server authority
                         player['position'] = {'x': pos['x'], 'y': new_y, 'z': pos['z']}
+                        
+                        # Broadcast updated state to all players
                         await broadcast_global_state()
             elif event == "chat_message":
                 player = players.get(sid)
@@ -177,6 +180,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     player['chat_message'] = text
                     player['chat_expiry'] = time.time() + CHAT_EXPIRY_SECONDS
                     await broadcast_global_state()
+            elif event == "ping":
+                # Handle ping for RTT measurement
+                await websocket.send_json({
+                    "event": "ping",
+                    "data": {
+                        "timestamp": payload.get('timestamp', time.time() * 1000)
+                    }
+                })
     except WebSocketDisconnect:
         print(f"Client disconnected: sid={sid}, name={players.get(sid, {}).get('name', 'UNKNOWN')}")
         if sid in players:
