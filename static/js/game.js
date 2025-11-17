@@ -100,6 +100,10 @@ this.connectWebSocket();
 
         // Dynamically discover and load all model textures at game start
         this.modelTextures = {}; // { modelName: { textureName: THREE.Texture } }
+        // Remote player interpolation state
+        this.remoteSnapshots = new Map(); // id -> [{ t, x, y, z }]
+        this.interpolationDelayMs = 100; // render remote players ~100ms in the past
+        this.maxSnapshotsPerPlayer = 20;
         this.modelTexturesReady = false;
         discoverModelsAndTextures().then((models) => {
             let loadedCount = 0;
@@ -129,8 +133,26 @@ this.connectWebSocket();
         this.setupScene();
         // Socket events now handled by WebSocket setup in connectWebSocket
         this.setupUI();
+        this.loadPhysicsConfig();
         this.animate();
         this.startNetworkHealthMonitoring();
+    }
+
+    async loadPhysicsConfig() {
+        try {
+            const response = await fetch('/physics');
+            if (!response.ok) {
+                console.warn('[Physics] Failed to fetch physics config, using defaults');
+                return;
+            }
+            const config = await response.json();
+            console.log('[Physics] Loaded physics config from server:', config);
+            if (this.controls && typeof this.controls.setPhysicsConfig === 'function') {
+                this.controls.setPhysicsConfig(config);
+            }
+        } catch (e) {
+            console.error('[Physics] Error fetching physics config:', e);
+        }
     }
 
     /**
@@ -427,33 +449,95 @@ animate() {
     if (!this.isActive) return;
 
     // Get movement from controls
-    const movement = this.controls.update(this.playerMesh ? this.playerMesh.position.y : 0);
-    
+    const movement = this.controls.update(
+        this.playerMesh ? this.playerMesh.position.y - 1 : 0 // convert from mesh Y to logical Y
+    );
     if (this.playerMesh && (movement.x !== 0 || movement.y !== 0 || movement.z !== 0)) {
-        // Calculate new position
-        const newPos = {
+        // Current logical position (center height)
+        const currentLogicalY = this.playerMesh.position.y - 1;
+
+        const groundLevel = (this.controls && typeof this.controls.groundLevel === 'number')
+            ? this.controls.groundLevel
+            : 0;
+
+        // Calculate new logical position in logical coordinates
+        const newLogicalPos = {
             x: this.playerMesh.position.x + movement.x,
-            y: Math.max(0, this.playerMesh.position.y + movement.y),
+            y: Math.max(groundLevel, currentLogicalY + movement.y),
             z: this.playerMesh.position.z + movement.z
         };
-        
-        // Update local position immediately for responsiveness
-        this.playerMesh.position.set(newPos.x, newPos.y, newPos.z);
-        
-        // Send position directly to server at reduced frequency
+
+        // Update local mesh position immediately for responsiveness (mesh Y = logical Y + 1)
+        this.playerMesh.position.set(
+            newLogicalPos.x,
+            newLogicalPos.y + 1,
+            newLogicalPos.z
+        );
+
+        // Send logical position directly to server at reduced frequency
         if (!this.lastInputSent || Date.now() - this.lastInputSent > 50) { // 20 times per second
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.packetsSent++;
                 this.ws.send(JSON.stringify({ 
                     event: 'player_move', 
                     data: { 
-                        position: newPos
+                        position: newLogicalPos
                     } 
                 }));
             }
             this.lastInputSent = Date.now();
         }
     }
+
+    // Interpolate remote players each frame
+    const now = performance.now();
+    const renderTime = now - this.interpolationDelayMs;
+    this.players.forEach((obj, id) => {
+        // Skip local player (already handled above)
+        if (!obj || !obj.mesh || id === this.playerId) return;
+
+        const snapshots = this.remoteSnapshots.get(id);
+        if (!snapshots || snapshots.length === 0) return;
+
+        // Find two snapshots around renderTime
+        let older = null;
+        let newer = null;
+        for (let i = 0; i < snapshots.length; i++) {
+            const s = snapshots[i];
+            if (s.t <= renderTime) {
+                older = s;
+            } else {
+                newer = s;
+                break;
+            }
+        }
+
+        if (!older && !newer) {
+            return;
+        }
+
+        let interpX, interpY, interpZ;
+        if (older && newer) {
+            const span = newer.t - older.t;
+            const alpha = span > 0 ? (renderTime - older.t) / span : 0;
+            const clampedAlpha = Math.max(0, Math.min(1, alpha));
+            interpX = older.x + (newer.x - older.x) * clampedAlpha;
+            interpY = older.y + (newer.y - older.y) * clampedAlpha;
+            interpZ = older.z + (newer.z - older.z) * clampedAlpha;
+        } else if (older) {
+            // Only older snapshot, just use it
+            interpX = older.x;
+            interpY = older.y;
+            interpZ = older.z;
+        } else {
+            // Only newer snapshot
+            interpX = newer.x;
+            interpY = newer.y;
+            interpZ = newer.z;
+        }
+
+        obj.mesh.position.set(interpX, interpY + 1, interpZ);
+    });
 
     // Camera tracking and rotation for local player
     if (this.playerMesh) {
@@ -794,6 +878,7 @@ updatePerformanceInfo() {
         this.players.forEach((_, id) => {
             if (!newIds.has(id)) {
                 this.removePlayer(id);
+                this.remoteSnapshots.delete(id);
             }
         });
         
@@ -805,8 +890,61 @@ updatePerformanceInfo() {
             // Update position
             const obj = this.players.get(player.id);
             if (obj && obj.mesh) {
-                // Always update all players to server position
-                obj.mesh.position.set(player.position.x, player.position.y + 1, player.position.z);
+                const serverX = player.position.x;
+                const serverY = player.position.y + 1; // mesh Y = logical Y + 1
+                const serverZ = player.position.z;
+
+                // Soft correction for local player, interpolation for others
+                if (player.id === this.playerId && this.playerMesh === obj.mesh) {
+                    // Distance between current mesh position and server position
+                    const dx = serverX - obj.mesh.position.x;
+                    const dy = serverY - obj.mesh.position.y;
+                    const dz = serverZ - obj.mesh.position.z;
+                    const distSq = dx * dx + dy * dy + dz * dz;
+
+                    // Thresholds (tunable): only correct if error is noticeable
+                    const positionErrorThreshold = 0.1; // ~0.3 units distance squared
+                    const snapErrorThreshold = 4.0; // large error -> immediate snap (2 units)
+
+                    if (distSq > snapErrorThreshold) {
+                        // Large desync: snap directly
+                        obj.mesh.position.set(serverX, serverY, serverZ);
+                    } else if (distSq > positionErrorThreshold) {
+                        // Small/medium desync: interpolate toward server
+                        const correctionFactor = 0.2; // 0..1, how aggressively to pull toward server
+                        obj.mesh.position.set(
+                            obj.mesh.position.x + dx * correctionFactor,
+                            obj.mesh.position.y + dy * correctionFactor,
+                            obj.mesh.position.z + dz * correctionFactor
+                        );
+                    }
+                    // If server says we're effectively on the ground, snap exactly to ground to avoid micro vertical drift
+                    const logicalYFromServer = player.position.y;
+                    const localGround = (this.controls && typeof this.controls.groundLevel === 'number')
+                        ? this.controls.groundLevel
+                        : 0;
+                    if (Math.abs(logicalYFromServer - localGround) < 0.01) {
+                        obj.mesh.position.y = localGround + 1;
+                        if (this.controls) {
+                            this.controls.verticalVelocity = 0;
+                            this.controls.isGrounded = true;
+                        }
+                    }
+                    // If below threshold, keep purely predicted position
+                } else {
+                    // Remote players: record snapshots for interpolation
+                    const now = performance.now();
+                    let snapshots = this.remoteSnapshots.get(player.id);
+                    if (!snapshots) {
+                        snapshots = [];
+                        this.remoteSnapshots.set(player.id, snapshots);
+                    }
+                    snapshots.push({ t: now, x: serverX, y: player.position.y, z: serverZ });
+                    // Keep snapshot buffer bounded
+                    if (snapshots.length > this.maxSnapshotsPerPlayer) {
+                        snapshots.splice(0, snapshots.length - this.maxSnapshotsPerPlayer);
+                    }
+                }
                 
                 // Handle chat bubbles
                 if (player.chat_message && player.chat_message.length > 0) {

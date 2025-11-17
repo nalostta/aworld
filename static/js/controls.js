@@ -14,16 +14,36 @@ class PlayerControls {
         this.moveSpeed = 0.1;
         this.sprintMultiplier = 2;
         this.crouchMultiplier = 0.5;
+        // Physics parameters (can be overridden by backend config)
         this.jumpForce = 0.2;
         this.gravity = 0.01;
+        this.groundLevel = 0; // logical ground level for player center
         this.verticalVelocity = 0;
         this.isGrounded = true;
+        // Track previous jump key state to detect fresh presses
+        this.wasJumpPressed = false;
         this.isActive = true; // Default to active
         this.lastActiveTime = Date.now();
         this.checkInterval = 100; // Check every 100ms
 
         this.setupEventListeners();
         this.startActiveSessionCheck();
+    }
+
+    setPhysicsConfig(config) {
+        if (!config || typeof config !== 'object') return;
+        if (typeof config.gravity === 'number') {
+            this.gravity = config.gravity;
+        }
+        if (typeof config.jumpVelocity === 'number') {
+            // Server exposes jumpVelocity; map it to client jumpForce
+            this.jumpForce = config.jumpVelocity;
+        } else if (typeof config.jumpForce === 'number') {
+            this.jumpForce = config.jumpForce;
+        }
+        if (typeof config.groundLevel === 'number') {
+            this.groundLevel = config.groundLevel;
+        }
     }
 
     setupEventListeners() {
@@ -195,34 +215,51 @@ class PlayerControls {
 
         // Debug output for movement
         if (dx !== 0 || dz !== 0) {
-            console.log("Movement vector:", { x: dx, y: this.verticalVelocity, z: dz });
+            console.log("Movement vector (horizontal):", { x: dx, z: dz });
         }
 
-        return { x: dx, y: this.verticalVelocity, z: dz };
+        // Only horizontal movement here; vertical is handled in update()
+        return { x: dx, y: 0, z: dz };
     }
 
-    // update(y) - y is the current vertical position of the player
+    // update(y) - y is the current vertical position of the player (logical center height)
     update(y = 0) {
         if (!this.isActive) return { x: 0, y: 0, z: 0 };
 
+        const ground = this.groundLevel;
+
+        const jumpPressed = this.keys.jump;
+        const jumpJustPressed = jumpPressed && !this.wasJumpPressed;
+
         // Handle jumping
-        if (this.keys.jump && this.isGrounded) {
+        if (jumpJustPressed && this.isGrounded) {
             this.verticalVelocity = this.jumpForce;
             this.isGrounded = false;
         }
 
-        // Apply gravity
+        // Apply gravity while in the air
         if (!this.isGrounded) {
             this.verticalVelocity -= this.gravity;
         }
 
-        // Ground check: only set grounded when y <= 0 (at or below ground)
-        if ((y + this.verticalVelocity) <= 0) {
+        // Integrate vertical position
+        let newY = y + this.verticalVelocity;
+
+        // Ground clamp and grounded state
+        if (newY <= ground) {
+            newY = ground;
             this.verticalVelocity = 0;
             this.isGrounded = true;
         }
 
-        return this.getMovementVector();
+        const movement = this.getMovementVector();
+        // Vertical component is the change in height this frame
+        movement.y = newY - y;
+
+        // Store jump key state for next frame (edge detection)
+        this.wasJumpPressed = jumpPressed;
+
+        return movement;
     }
 }
 

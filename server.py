@@ -19,6 +19,7 @@ wall_display_content = 'Welcome to AWorld!'
 CHAT_EXPIRY_SECONDS = 15
 SERVER_GRAVITY = 0.02  # units per tick
 SERVER_JUMP_VELOCITY = 0.25  # units per jump
+GROUND_LEVEL = 0.0  # logical ground level for player center
 connected_websockets = set()
 
 # Utility: send to all, removing closed sockets
@@ -104,6 +105,15 @@ async def health():
         "broadcast_time_total": broadcast_time_total,
         "broadcast_time_average": broadcast_time_total / broadcast_count if broadcast_count > 0 else 0,
         "timestamp": time.time()
+    }
+
+@app.get("/physics")
+async def physics():
+    """Expose server physics parameters so clients can configure themselves dynamically."""
+    return {
+        "gravity": SERVER_GRAVITY,
+        "jumpVelocity": SERVER_JUMP_VELOCITY,
+        "groundLevel": GROUND_LEVEL,
     }
 
 @app.websocket("/ws")
