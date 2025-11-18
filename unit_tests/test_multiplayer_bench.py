@@ -91,8 +91,8 @@ class MultiplayerTestbench:
                 start = time.time()
                 step_interval = 0.05
                 while time.time() - start < self.duration_seconds:
-                    dx = random.uniform(-0.1, 0.1)
-                    dz = random.uniform(-0.1, 0.1)
+                    dx = random.uniform(-1.5, 1.5)
+                    dz = random.uniform(-1.5, 1.5)
                     local_pos["x"] += dx
                     local_pos["z"] += dz
 
