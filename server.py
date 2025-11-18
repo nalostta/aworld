@@ -20,18 +20,21 @@ CHAT_EXPIRY_SECONDS = 15
 SERVER_GRAVITY = 0.02  # units per tick
 SERVER_JUMP_VELOCITY = 0.25  # units per jump
 GROUND_LEVEL = 0.0  # logical ground level for player center
+MOVE_SPEED = 0.1  # base movement speed
+SPRINT_MULTIPLIER = 2.0
+CROUCH_MULTIPLIER = 0.5
 connected_websockets = set()
 
 # Utility: send to all, removing closed sockets
 async def safe_broadcast(message):
     to_remove = set()
-    for ws in connected_websockets:
+    for ws in list(connected_websockets):
         try:
             await ws.send_json(message)
         except Exception:
             to_remove.add(ws)
     for ws in to_remove:
-        connected_websockets.remove(ws)
+        connected_websockets.discard(ws)
 
 # Store active players with position, vertical velocity, and chat info
 players = {}
@@ -53,6 +56,65 @@ def prune_expired_chats():
         if 'chat_expiry' in p and p['chat_expiry'] and p['chat_expiry'] < now:
             p['chat_message'] = ''
             p['chat_expiry'] = None
+
+def process_input(player: Dict[str, Any], input_data: Dict[str, Any]) -> Dict[str, float]:
+    """Process input commands and return new position"""
+    import math
+    
+    inputs = input_data.get('inputs', {})
+    camera_rotation = input_data.get('cameraRotation', 0)
+    
+    # Calculate movement speed
+    speed = MOVE_SPEED
+    if 'sprint' in inputs and inputs['sprint']['pressed']:
+        speed *= SPRINT_MULTIPLIER
+    if 'crouch' in inputs and inputs['crouch']['pressed']:
+        speed *= CROUCH_MULTIPLIER
+    
+    # Calculate horizontal movement
+    dx = 0.0
+    dz = 0.0
+    
+    if 'forward' in inputs and inputs['forward']['pressed']:
+        dz -= math.cos(camera_rotation) * speed
+        dx -= math.sin(camera_rotation) * speed
+    if 'backward' in inputs and inputs['backward']['pressed']:
+        dz += math.cos(camera_rotation) * speed
+        dx += math.sin(camera_rotation) * speed
+    if 'left' in inputs and inputs['left']['pressed']:
+        dx -= math.cos(camera_rotation) * speed
+        dz += math.sin(camera_rotation) * speed
+    if 'right' in inputs and inputs['right']['pressed']:
+        dx += math.cos(camera_rotation) * speed
+        dz -= math.sin(camera_rotation) * speed
+    
+    # Get current position
+    current_pos = player['position']
+    current_y = current_pos['y']
+    
+    # Handle jumping
+    jump_pressed = 'jump' in inputs and inputs['jump']['pressed']
+    if jump_pressed and current_y <= 0.01:  # On ground
+        player['vy'] = SERVER_JUMP_VELOCITY
+    
+    # Apply gravity
+    if current_y > 0:
+        player['vy'] -= SERVER_GRAVITY
+        new_y = current_y + player['vy']
+    else:
+        new_y = current_y
+    
+    # Ground clamp
+    if new_y <= GROUND_LEVEL:
+        new_y = GROUND_LEVEL
+        player['vy'] = 0
+    
+    # Return new position
+    return {
+        'x': current_pos['x'] + dx,
+        'y': new_y,
+        'z': current_pos['z'] + dz
+    }
 
 async def broadcast_global_state():
     """Simple broadcast of all player states"""
@@ -154,8 +216,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({"event": "current_players", "players": list(players.values())})
                 await websocket.send_json({"event": "wall_display_update", "content": wall_display_content})
                 await broadcast_global_state()
+            elif event == "player_input":
+                # Handle input commands with timestamps
+                if sid in players:
+                    player = players[sid]
+                    # Process input and calculate new position server-side
+                    new_position = process_input(player, payload)
+                    player['position'] = new_position
+                    
+                    # Send authoritative position back to client
+                    await websocket.send_json({
+                        "event": "server_position_update",
+                        "data": {
+                            "sequence": payload.get('sequence'),
+                            "position": new_position
+                        }
+                    })
+                    
+                    # Broadcast updated state to all players
+                    await broadcast_global_state()
             elif event == "player_move":
-                # Handle direct position updates from client
+                # Handle direct position updates from client (legacy support)
                 if sid in players:
                     pos = payload.get('position')
                     player = players[sid]

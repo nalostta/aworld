@@ -10,6 +10,20 @@ class PlayerControls {
             crouch: false
         };
         
+        // Track key press timestamps for input-based networking
+        this.keyTimestamps = {
+            forward: 0,
+            backward: 0,
+            left: 0,
+            right: 0,
+            jump: 0,
+            sprint: 0,
+            crouch: 0
+        };
+        
+        // Input sequence number for reconciliation
+        this.inputSequence = 0;
+        
         this.cameraRotation = 0;
         this.moveSpeed = 0.1;
         this.sprintMultiplier = 2;
@@ -136,14 +150,37 @@ class PlayerControls {
         const key = event.key.toLowerCase();
         console.log("Processing keydown:", key);
         
+        const timestamp = Date.now();
+        
         switch(key) {
-            case 'w': this.keys.forward = true; break;
-            case 's': this.keys.backward = true; break;
-            case 'a': this.keys.left = true; break;
-            case 'd': this.keys.right = true; break;
-            case ' ': this.keys.jump = true; break;
-            case 'shift': this.keys.sprint = true; break;
-            case 'c': this.keys.crouch = true; break;
+            case 'w': 
+                if (!this.keys.forward) this.keyTimestamps.forward = timestamp;
+                this.keys.forward = true; 
+                break;
+            case 's': 
+                if (!this.keys.backward) this.keyTimestamps.backward = timestamp;
+                this.keys.backward = true; 
+                break;
+            case 'a': 
+                if (!this.keys.left) this.keyTimestamps.left = timestamp;
+                this.keys.left = true; 
+                break;
+            case 'd': 
+                if (!this.keys.right) this.keyTimestamps.right = timestamp;
+                this.keys.right = true; 
+                break;
+            case ' ': 
+                if (!this.keys.jump) this.keyTimestamps.jump = timestamp;
+                this.keys.jump = true; 
+                break;
+            case 'shift': 
+                if (!this.keys.sprint) this.keyTimestamps.sprint = timestamp;
+                this.keys.sprint = true; 
+                break;
+            case 'c': 
+                if (!this.keys.crouch) this.keyTimestamps.crouch = timestamp;
+                this.keys.crouch = true; 
+                break;
             case 'q': this.rotateCamera(-1); break;
             case 'e': this.rotateCamera(1); break;
         }
@@ -183,6 +220,29 @@ class PlayerControls {
     rotateCamera(direction) {
         if (!this.isActive) return;
         this.cameraRotation += direction * Math.PI / 4;
+    }
+    
+    // Get current input state with timestamps and durations
+    getInputState() {
+        const now = Date.now();
+        const inputs = {};
+        
+        for (const [key, pressed] of Object.entries(this.keys)) {
+            if (pressed) {
+                inputs[key] = {
+                    pressed: true,
+                    timestamp: this.keyTimestamps[key],
+                    duration: now - this.keyTimestamps[key]
+                };
+            }
+        }
+        
+        return {
+            sequence: ++this.inputSequence,
+            timestamp: now,
+            inputs: inputs,
+            cameraRotation: this.cameraRotation
+        };
     }
 
     getMovementVector() {

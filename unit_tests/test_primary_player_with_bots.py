@@ -127,10 +127,17 @@ async def bot_task(ws_url: str, idx: int, duration: float):
         print(f"[bot {idx}] error: {exc}")
 
 
-async def run_test(server: str, duration: float, bot_count: int, bot_stagger: float):
+async def run_test(server: str, duration: float, bot_count: int, bot_stagger: float, primary_count: int):
     ws_url = build_ws_url(server)
-    primary = PrimaryPlayerMonitor(ws_url, "PrimaryTest", duration)
+    
+    # Create multiple primary players
+    primary_tasks = []
+    for i in range(primary_count):
+        primary = PrimaryPlayerMonitor(ws_url, f"Primary{i+1}", duration)
+        primary_tasks.append(asyncio.create_task(primary.run()))
+        await asyncio.sleep(0.1)  # Small stagger between primary players
 
+    # Spawn bots
     bot_tasks = []
     for i in range(bot_count):
         bot_tasks.append(asyncio.create_task(
@@ -138,7 +145,10 @@ async def run_test(server: str, duration: float, bot_count: int, bot_stagger: fl
         ))
         await asyncio.sleep(bot_stagger)
 
-    primary_summary = await primary.run()
+    # Wait for all primary players to complete
+    primary_summaries = await asyncio.gather(*primary_tasks)
+    
+    # Cancel bots
     for task in bot_tasks:
         task.cancel()
         try:
@@ -146,14 +156,25 @@ async def run_test(server: str, duration: float, bot_count: int, bot_stagger: fl
         except asyncio.CancelledError:
             pass
 
-    print("\n=== Primary player summary ===")
-    print(f"Samples: {primary_summary['samples']}")
-    print(f"Displacement (XZ): {primary_summary['displacement']:.2f}")
-    print(f"Bot joins observed: {primary_summary['join_events']}")
-    if primary_summary['displacement'] < 1.0:
-        print("Result: Primary player appeared stuck (displacement < 1.0 unit).")
-    else:
-        print("Result: Primary player moved significantly while bots were active.")
+    # Report results for each primary player
+    print("\n=== Primary Players Summary ===")
+    for idx, summary in enumerate(primary_summaries, 1):
+        print(f"\n--- Primary Player {idx} ---")
+        print(f"Samples: {summary['samples']}")
+        print(f"Displacement (XZ): {summary['displacement']:.2f}")
+        print(f"Bot joins observed: {summary['join_events']}")
+        if summary['displacement'] < 1.0:
+            print("Result: Player appeared stuck (displacement < 1.0 unit).")
+        else:
+            print("Result: Player moved significantly while bots were active.")
+    
+    # Overall summary
+    avg_displacement = sum(s['displacement'] for s in primary_summaries) / len(primary_summaries)
+    stuck_count = sum(1 for s in primary_summaries if s['displacement'] < 1.0)
+    print(f"\n=== Overall ===")
+    print(f"Total primary players: {primary_count}")
+    print(f"Average displacement: {avg_displacement:.2f}")
+    print(f"Players stuck: {stuck_count}/{primary_count}")
 
 
 def parse_args():
@@ -162,6 +183,7 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=15.0, help="Run duration for primary player (seconds)")
     parser.add_argument("--bots", type=int, default=4, help="Number of bot clients to spawn")
     parser.add_argument("--bot-stagger", type=float, default=1.0, help="Delay between bot joins (seconds)")
+    parser.add_argument("--primary-players", type=int, default=1, help="Number of primary players to monitor")
     return parser.parse_args()
 
 
@@ -172,4 +194,5 @@ if __name__ == "__main__":
         duration=args.duration,
         bot_count=args.bots,
         bot_stagger=args.bot_stagger,
+        primary_count=args.primary_players,
     ))

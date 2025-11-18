@@ -457,40 +457,47 @@ animate() {
     const movement = this.controls.update(
         this.playerMesh ? this.playerMesh.position.y - 1 : 0 // convert from mesh Y to logical Y
     );
-    if (this.playerMesh && (movement.x !== 0 || movement.y !== 0 || movement.z !== 0)) {
-        // Current logical position (center height)
-        const currentLogicalY = this.playerMesh.position.y - 1;
+    
+    if (this.playerMesh) {
+        // Apply movement if any
+        if (movement.x !== 0 || movement.y !== 0 || movement.z !== 0) {
+            // Current logical position (center height)
+            const currentLogicalY = this.playerMesh.position.y - 1;
 
-        const groundLevel = (this.controls && typeof this.controls.groundLevel === 'number')
-            ? this.controls.groundLevel
-            : 0;
+            const groundLevel = (this.controls && typeof this.controls.groundLevel === 'number')
+                ? this.controls.groundLevel
+                : 0;
 
-        // Calculate new logical position in logical coordinates
-        const newLogicalPos = {
-            x: this.playerMesh.position.x + movement.x,
-            y: Math.max(groundLevel, currentLogicalY + movement.y),
-            z: this.playerMesh.position.z + movement.z
-        };
+            // Calculate new logical position in logical coordinates
+            const newLogicalPos = {
+                x: this.playerMesh.position.x + movement.x,
+                y: Math.max(groundLevel, currentLogicalY + movement.y),
+                z: this.playerMesh.position.z + movement.z
+            };
 
-        // Update local mesh position immediately for responsiveness (mesh Y = logical Y + 1)
-        this.playerMesh.position.set(
-            newLogicalPos.x,
-            newLogicalPos.y + 1,
-            newLogicalPos.z
-        );
+            // Update local mesh position immediately for responsiveness (mesh Y = logical Y + 1)
+            this.playerMesh.position.set(
+                newLogicalPos.x,
+                newLogicalPos.y + 1,
+                newLogicalPos.z
+            );
+        }
 
-        // Send logical position directly to server at reduced frequency
-        if (!this.lastInputSent || Date.now() - this.lastInputSent > 50) { // 20 times per second
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.packetsSent++;
-                this.ws.send(JSON.stringify({ 
-                    event: 'player_move', 
-                    data: { 
-                        position: newLogicalPos
-                    } 
-                }));
+        // Send input commands continuously when any key is pressed (not just when moving)
+        if (this.controls && typeof this.controls.getInputState === 'function') {
+            const inputState = this.controls.getInputState();
+            const hasActiveInput = Object.keys(inputState.inputs).length > 0;
+            
+            if (hasActiveInput && (!this.lastInputSent || Date.now() - this.lastInputSent > 50)) { // 20 times per second
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.packetsSent++;
+                    this.ws.send(JSON.stringify({ 
+                        event: 'player_input', 
+                        data: inputState
+                    }));
+                }
+                this.lastInputSent = Date.now();
             }
-            this.lastInputSent = Date.now();
         }
     }
 
