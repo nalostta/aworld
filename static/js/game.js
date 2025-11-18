@@ -410,6 +410,11 @@ this.connectWebSocket();
                     // The backend sends {event: ..., players: [...]}
                     this.handleGlobalStateUpdate(msg.players);
                     break;
+                case 'current_players':
+                    if (Array.isArray(msg.players)) {
+                        this.handleGlobalStateUpdate(msg.players);
+                    }
+                    break;
                 case 'player_count_update':
                     // The backend sends {event: ..., count: ...} (not in data)
                     this.updatePlayerCount(msg.count);
@@ -740,7 +745,20 @@ updatePerformanceInfo() {
             console.error('[addPlayer] Missing player id or name:', playerData);
             return;
         }
-        if (this.players.has(playerData.id)) return;
+        if (this.players.has(playerData.id)) {
+            const existing = this.players.get(playerData.id);
+            if (existing) {
+                existing.data = playerData;
+                if (!this.playerId && this.playerName && playerData.name === this.playerName) {
+                    this.playerId = playerData.id;
+                }
+                if (this.playerId === playerData.id && !this.playerMesh) {
+                    this.playerMesh = existing.mesh;
+                    this.playerLabel = existing.label;
+                }
+            }
+            return;
+        }
 
         console.log("[addPlayer] Adding player:", playerData);
 
@@ -772,7 +790,11 @@ updatePerformanceInfo() {
         });
 
         // Check if this is our player (either by ID match or if we don't have a player mesh yet)
-        if (playerData.id === this.playerId || (!this.playerMesh && this.playerName === playerData.name)) {
+        if (!this.playerId && this.playerName === playerData.name) {
+            this.playerId = playerData.id;
+        }
+
+        if (playerData.id === this.playerId && this.playerMesh !== mesh) {
             console.log("Setting local player mesh:", mesh);
             this.playerMesh = mesh;
             this.playerLabel = label;
@@ -877,12 +899,18 @@ updatePerformanceInfo() {
         const newIds = new Set(players.map(p => p.id));
         this.players.forEach((_, id) => {
             if (!newIds.has(id)) {
+                if (id === this.playerId) {
+                    return;
+                }
                 this.removePlayer(id);
                 this.remoteSnapshots.delete(id);
             }
         });
         
         players.forEach(player => {
+            if (!this.playerId && this.playerName && player.name === this.playerName) {
+                this.playerId = player.id;
+            }
             // Add if missing
             if (!this.players.has(player.id)) {
                 this.addPlayer(player);
@@ -890,6 +918,7 @@ updatePerformanceInfo() {
             // Update position
             const obj = this.players.get(player.id);
             if (obj && obj.mesh) {
+                obj.data = player;
                 const serverX = player.position.x;
                 const serverY = player.position.y + 1; // mesh Y = logical Y + 1
                 const serverZ = player.position.z;
