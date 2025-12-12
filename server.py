@@ -5,6 +5,7 @@ from fastapi.templating import Jinja2Templates
 import uuid
 import os
 import time
+import math
 from typing import Dict, Any
 import asyncio
 import psutil
@@ -37,18 +38,11 @@ async def safe_broadcast(message):
         connected_websockets.discard(ws)
 
 # Store active players with position, vertical velocity, and chat info
-players = {}
+# Note: players dict is initialized above at line 17
 server_start_time = time.time()  # For uptime tracking
 last_broadcast_time = 0  # For broadcast rate limiting
 broadcast_count = 0  # Performance tracking
 broadcast_time_total = 0  # Performance tracking
-
-# --- Wall Display State ---
-wall_display_content = 'Welcome to AWorld!'
-
-CHAT_EXPIRY_SECONDS = 15
-SERVER_GRAVITY = 0.02  # units per tick
-SERVER_JUMP_VELOCITY = 0.25  # units per jump
 
 def prune_expired_chats():
     now = time.time()
@@ -59,8 +53,6 @@ def prune_expired_chats():
 
 def process_input(player: Dict[str, Any], input_data: Dict[str, Any]) -> Dict[str, float]:
     """Process input commands and return new position"""
-    import math
-    
     inputs = input_data.get('inputs', {})
     camera_rotation = input_data.get('cameraRotation', 0)
     
