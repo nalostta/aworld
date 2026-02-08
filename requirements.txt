@@ -7,4 +7,5 @@ gunicorn
 pytest
 httpx
 starlette
+itsdangerous
 dnspython<2.0.0,>=1.15.0
