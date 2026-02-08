@@ -84,6 +84,24 @@ this.connectWebSocket();
         this.isActive = true; // Default to active
         this.lastSentPos = null;
 
+        this.clientTelemetry = {
+            lastPos: null,
+            lastTsMs: null,
+            lastSentTsMs: 0,
+            sendIntervalMs: 1000,
+        };
+
+        this.moveSend = {
+            lastSentTsMs: 0,
+            intervalMs: 1000 / 30,
+        };
+
+        this.lastGlobalSync = {
+            timestampMs: null,
+            checksum: null,
+            playersCount: 0,
+        };
+
         // Add ambient light
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
         this.scene.add(ambientLight);
@@ -136,6 +154,98 @@ this.connectWebSocket();
         this.loadPhysicsConfig();
         this.animate();
         this.startNetworkHealthMonitoring();
+    }
+
+    fnv1a32(str) {
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) {
+            hash ^= str.charCodeAt(i);
+            hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+        }
+        return hash >>> 0;
+    }
+
+    computeGlobalChecksum(players) {
+        if (!Array.isArray(players)) return { checksum: null, playersCount: 0 };
+        const normalized = players
+            .map((p) => {
+                const pos = p.position || {};
+                const x = typeof pos.x === 'number' ? pos.x : 0;
+                const y = typeof pos.y === 'number' ? pos.y : 0;
+                const z = typeof pos.z === 'number' ? pos.z : 0;
+                return {
+                    id: String(p.id || ''),
+                    x: x.toFixed(3),
+                    y: y.toFixed(3),
+                    z: z.toFixed(3),
+                };
+            })
+            .sort((a, b) => a.id.localeCompare(b.id));
+
+        const payload = normalized.map((p) => `${p.id}:${p.x},${p.y},${p.z}`).join('|');
+        const checksum = this.fnv1a32(payload).toString(16).padStart(8, '0');
+        return { checksum, playersCount: normalized.length };
+    }
+
+    updateSyncInfo(timestampMs, players) {
+        const el = document.getElementById('sync-info');
+        if (!el) return;
+
+        const { checksum, playersCount } = this.computeGlobalChecksum(players);
+        this.lastGlobalSync.timestampMs = timestampMs ?? null;
+        this.lastGlobalSync.checksum = checksum;
+        this.lastGlobalSync.playersCount = playersCount;
+
+        el.textContent = `SYNC ts: ${timestampMs ?? '--'} | players: ${playersCount} | checksum: ${checksum ?? '--'}`;
+    }
+
+    maybeSendClientTelemetry() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (!this.playerId || !this.playerMesh) return;
+
+        const nowMs = Date.now();
+        if (nowMs - this.clientTelemetry.lastSentTsMs < this.clientTelemetry.sendIntervalMs) {
+            return;
+        }
+
+        const logicalPos = {
+            x: this.playerMesh.position.x,
+            y: this.playerMesh.position.y - 1,
+            z: this.playerMesh.position.z,
+        };
+
+        if (!this.clientTelemetry.lastPos || !this.clientTelemetry.lastTsMs) {
+            this.clientTelemetry.lastPos = logicalPos;
+            this.clientTelemetry.lastTsMs = nowMs;
+            this.clientTelemetry.lastSentTsMs = nowMs;
+            return;
+        }
+
+        const dtMs = nowMs - this.clientTelemetry.lastTsMs;
+        if (dtMs <= 0) {
+            return;
+        }
+
+        const dx = logicalPos.x - this.clientTelemetry.lastPos.x;
+        const dy = logicalPos.y - this.clientTelemetry.lastPos.y;
+        const dz = logicalPos.z - this.clientTelemetry.lastPos.z;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const localDeltaPerSec = (dist / dtMs) * 1000;
+
+        this.ws.send(JSON.stringify({
+            event: 'client_telemetry',
+            data: {
+                playerId: this.playerId,
+                timestamp_ms: nowMs,
+                dt_ms: dtMs,
+                local_delta_per_sec: localDeltaPerSec,
+                position: logicalPos,
+            }
+        }));
+
+        this.clientTelemetry.lastPos = logicalPos;
+        this.clientTelemetry.lastTsMs = nowMs;
+        this.clientTelemetry.lastSentTsMs = nowMs;
     }
 
     async loadPhysicsConfig() {
@@ -406,8 +516,68 @@ this.connectWebSocket();
                 return;
             }
             switch (msg.event) {
+                case 'join_success':
+                    if (msg.data && msg.data.playerId) {
+                        this.playerId = msg.data.playerId;
+                        const existing = this.players.get(this.playerId);
+                        if (existing && !this.playerMesh) {
+                            this.playerMesh = existing.mesh;
+                            this.playerLabel = existing.label;
+                        }
+                    }
+                    break;
+                case 'player_joined':
+                    if (msg.data && msg.data.id) {
+                        this.addPlayer(msg.data);
+                    }
+                    break;
+                case 'server_position_update':
+                    // Server broadcasts authoritative position updates for a single player.
+                    // Client should update ALL meshes except the local primary mesh.
+                    if (msg.data && msg.data.position) {
+                        const pos = msg.data.position;
+                        const playerId = msg.data.playerId;
+                        const timestampMs = msg.data.timestamp_ms;
+
+                        // Backward compatibility: older servers may not include playerId and only meant this for the local client.
+                        // In that case, do NOT apply it to the local mesh (per new requirement).
+                        if (!playerId) {
+                            break;
+                        }
+
+                        // Skip local player primary mesh
+                        if (this.playerId && playerId === this.playerId) {
+                            break;
+                        }
+
+                        // If we haven't seen this player yet, wait for player_joined/current_players/global_state_update
+                        // so we don't create placeholders with incorrect name/color.
+                        if (!this.players.has(playerId)) {
+                            break;
+                        }
+
+                        // Feed interpolation buffer for smooth rendering
+                        const now = performance.now();
+                        let snapshots = this.remoteSnapshots.get(playerId);
+                        if (!snapshots) {
+                            snapshots = [];
+                            this.remoteSnapshots.set(playerId, snapshots);
+                        }
+                        snapshots.push({ t: now, x: pos.x, y: pos.y, z: pos.z, timestampMs });
+                        if (snapshots.length > this.maxSnapshotsPerPlayer) {
+                            snapshots.splice(0, snapshots.length - this.maxSnapshotsPerPlayer);
+                        }
+
+                        // Also apply an immediate update so the remote avatar doesn't lag a full interpolation window
+                        const obj = this.players.get(playerId);
+                        if (obj && obj.mesh) {
+                            obj.mesh.position.set(pos.x, pos.y + 1, pos.z);
+                        }
+                    }
+                    break;
                 case 'global_state_update':
                     // The backend sends {event: ..., players: [...]}
+                    this.updateSyncInfo(msg.timestamp_ms, msg.players);
                     this.handleGlobalStateUpdate(msg.players);
                     break;
                 case 'current_players':
@@ -451,55 +621,46 @@ this.connectWebSocket();
 
 animate() {
     requestAnimationFrame(() => this.animate());
-    if (!this.isActive) return;
 
-    // Get movement from controls
-    const movement = this.controls.update(
-        this.playerMesh ? this.playerMesh.position.y - 1 : 0 // convert from mesh Y to logical Y
-    );
-    
-    if (this.playerMesh) {
-        // Apply movement if any
-        if (movement.x !== 0 || movement.y !== 0 || movement.z !== 0) {
-            // Current logical position (center height)
-            const currentLogicalY = this.playerMesh.position.y - 1;
+    // Only drive local prediction + sending inputs when this session is active.
+    // Remote interpolation + rendering should continue even if the local tab is inactive.
+    if (this.isActive) {
+        // Get movement from controls
+        const movement = this.controls.update(
+            this.playerMesh ? this.playerMesh.position.y - 1 : 0 // convert from mesh Y to logical Y
+        );
 
-            const groundLevel = (this.controls && typeof this.controls.groundLevel === 'number')
-                ? this.controls.groundLevel
-                : 0;
+        if (this.playerMesh) {
+            // Client-side prediction for responsiveness.
+            // Server remains authoritative and will correct via global_state_update.
+            this.playerMesh.position.x += movement.x;
+            this.playerMesh.position.y += movement.y;
+            this.playerMesh.position.z += movement.z;
 
-            // Calculate new logical position in logical coordinates
-            const newLogicalPos = {
-                x: this.playerMesh.position.x + movement.x,
-                y: Math.max(groundLevel, currentLogicalY + movement.y),
-                z: this.playerMesh.position.z + movement.z
-            };
-
-            // Update local mesh position immediately for responsiveness (mesh Y = logical Y + 1)
-            this.playerMesh.position.set(
-                newLogicalPos.x,
-                newLogicalPos.y + 1,
-                newLogicalPos.z
-            );
-        }
-
-        // Send input commands continuously when any key is pressed (not just when moving)
-        if (this.controls && typeof this.controls.getInputState === 'function') {
-            const inputState = this.controls.getInputState();
-            const hasActiveInput = Object.keys(inputState.inputs).length > 0;
-            
-            if (hasActiveInput && (!this.lastInputSent || Date.now() - this.lastInputSent > 50)) { // 20 times per second
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            // Client-authoritative model: send authoritative position at a fixed rate.
+            const nowMs = Date.now();
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                if (nowMs - this.moveSend.lastSentTsMs >= this.moveSend.intervalMs) {
+                    const logicalPos = {
+                        x: this.playerMesh.position.x,
+                        y: this.playerMesh.position.y - 1,
+                        z: this.playerMesh.position.z,
+                    };
                     this.packetsSent++;
-                    this.ws.send(JSON.stringify({ 
-                        event: 'player_input', 
-                        data: inputState
+                    this.ws.send(JSON.stringify({
+                        event: 'player_move',
+                        data: {
+                            timestamp_ms: nowMs,
+                            position: logicalPos,
+                        },
                     }));
+                    this.moveSend.lastSentTsMs = nowMs;
                 }
-                this.lastInputSent = Date.now();
             }
         }
     }
+
+    this.maybeSendClientTelemetry();
 
     // Interpolate remote players each frame
     const now = performance.now();
@@ -583,7 +744,9 @@ updatePerformanceInfo() {
     this.lastFrameTime = now;
     const debugInfo = document.getElementById('debug-info');
     if (debugInfo) {
-        debugInfo.textContent = `FPS: ${this.fps.toFixed(2)} | Packets Sent: ${this.packetsSent} | Packets Received: ${this.packetsReceived} | RTT: ${this.averageRTT.toFixed(1)}ms`;
+        const syncTs = this.lastGlobalSync?.timestampMs ?? '--';
+        const syncChecksum = this.lastGlobalSync?.checksum ?? '--';
+        debugInfo.textContent = `FPS: ${this.fps.toFixed(2)} | Packets Sent: ${this.packetsSent} | Packets Received: ${this.packetsReceived} | RTT: ${this.averageRTT.toFixed(1)}ms | SYNC: ${syncTs} ${syncChecksum}`;
     }
 }
 
@@ -756,9 +919,27 @@ updatePerformanceInfo() {
             const existing = this.players.get(playerData.id);
             if (existing) {
                 existing.data = playerData;
-                if (!this.playerId && this.playerName && playerData.name === this.playerName) {
-                    this.playerId = playerData.id;
+
+                // If the player's name changed from a placeholder, refresh the label.
+                if (existing.label && playerData.name) {
+                    existing.mesh.remove(existing.label);
+                    const newLabel = this.createPlayerLabel(playerData.name);
+                    existing.mesh.add(newLabel);
+                    existing.label = newLabel;
+                    if (this.playerId === playerData.id) {
+                        this.playerLabel = newLabel;
+                    }
                 }
+
+                // Update avatar material color if provided.
+                if (existing.mesh && playerData.color) {
+                    existing.mesh.traverse((child) => {
+                        if (child && child.material && child.material.color) {
+                            child.material.color.set(playerData.color);
+                        }
+                    });
+                }
+
                 if (this.playerId === playerData.id && !this.playerMesh) {
                     this.playerMesh = existing.mesh;
                     this.playerLabel = existing.label;
@@ -795,11 +976,6 @@ updatePerformanceInfo() {
             label: label,
             data: playerData
         });
-
-        // Check if this is our player (either by ID match or if we don't have a player mesh yet)
-        if (!this.playerId && this.playerName === playerData.name) {
-            this.playerId = playerData.id;
-        }
 
         if (playerData.id === this.playerId && this.playerMesh !== mesh) {
             console.log("Setting local player mesh:", mesh);
@@ -915,9 +1091,6 @@ updatePerformanceInfo() {
         });
         
         players.forEach(player => {
-            if (!this.playerId && this.playerName && player.name === this.playerName) {
-                this.playerId = player.id;
-            }
             // Add if missing
             if (!this.players.has(player.id)) {
                 this.addPlayer(player);
@@ -932,41 +1105,8 @@ updatePerformanceInfo() {
 
                 // Soft correction for local player, interpolation for others
                 if (player.id === this.playerId && this.playerMesh === obj.mesh) {
-                    // Distance between current mesh position and server position
-                    const dx = serverX - obj.mesh.position.x;
-                    const dy = serverY - obj.mesh.position.y;
-                    const dz = serverZ - obj.mesh.position.z;
-                    const distSq = dx * dx + dy * dy + dz * dz;
-
-                    // Thresholds (tunable): only correct if error is noticeable
-                    const positionErrorThreshold = 0.1; // ~0.3 units distance squared
-                    const snapErrorThreshold = 4.0; // large error -> immediate snap (2 units)
-
-                    if (distSq > snapErrorThreshold) {
-                        // Large desync: snap directly
-                        obj.mesh.position.set(serverX, serverY, serverZ);
-                    } else if (distSq > positionErrorThreshold) {
-                        // Small/medium desync: interpolate toward server
-                        const correctionFactor = 0.2; // 0..1, how aggressively to pull toward server
-                        obj.mesh.position.set(
-                            obj.mesh.position.x + dx * correctionFactor,
-                            obj.mesh.position.y + dy * correctionFactor,
-                            obj.mesh.position.z + dz * correctionFactor
-                        );
-                    }
-                    // If server says we're effectively on the ground, snap exactly to ground to avoid micro vertical drift
-                    const logicalYFromServer = player.position.y;
-                    const localGround = (this.controls && typeof this.controls.groundLevel === 'number')
-                        ? this.controls.groundLevel
-                        : 0;
-                    if (Math.abs(logicalYFromServer - localGround) < 0.01) {
-                        obj.mesh.position.y = localGround + 1;
-                        if (this.controls) {
-                            this.controls.verticalVelocity = 0;
-                            this.controls.isGrounded = true;
-                        }
-                    }
-                    // If below threshold, keep purely predicted position
+                    // Local player: do not apply server corrections from global_state_update.
+                    // This keeps local movement purely client-driven (useful for diagnosing rubber-banding).
                 } else {
                     // Remote players: record snapshots for interpolation
                     const now = performance.now();

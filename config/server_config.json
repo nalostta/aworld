@@ -1,0 +1,32 @@
+{
+  "physics": {
+    "gravity": 0.02,
+    "jumpVelocity": 0.25,
+    "groundLevel": 0.0,
+    "terminalVelocity": 0.6
+  },
+  "network": {
+    "broadcastThrottle": 1,
+    "positionUpdateFrequency": 20,
+    "reconciliationThreshold": 0.5,
+    "messageCompression": false
+  },
+  "game": {
+    "world": {
+      "boundary": 250,
+      "defaultSpawn": [0, 0, 0]
+    },
+    "player": {
+      "maxPlayers": 64,
+      "timeoutSeconds": 60
+    }
+  },
+  "recording": {
+    "maxEntries": 10000,
+    "autoDeleteHours": 24,
+    "maxQps": 200,
+    "maxActiveRecordings": 1,
+    "tickSkipThresholdMs": 75,
+    "cpuThrottlePercent": 70
+  }
+}

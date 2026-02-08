@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AWorld Control Tower</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+    <link rel="stylesheet" href="/static/admin/css/admin.css" />
+</head>
+<body class="bg-slate-950 text-slate-100">
+    <div class="min-h-screen px-4 py-6 md:px-8">
+        <header class="mb-10 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+                <p class="text-sm uppercase tracking-widest text-slate-400">Operations</p>
+                <h1 class="text-3xl font-semibold text-white">AWorld Control Tower</h1>
+                <p class="text-slate-400">Monitor live players, server metrics, and diagnostic logs.</p>
+            </div>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <div class="flex items-center gap-2 text-sm">
+                    <span id="ws-indicator" class="status-dot bg-rose-500"></span>
+                    <span id="ws-indicator-label" class="text-slate-300">WebSocket: offline</span>
+                </div>
+                <div class="flex items-center gap-2 text-sm">
+                    <span class="text-slate-400">Server:</span>
+                    <span id="server-status" class="status-pill status-pill--warning">Unknown</span>
+                </div>
+                <button id="refresh-btn" class="btn-secondary" type="button">Refresh</button>
+                <form method="POST" action="/admin/logout">
+                    <button class="btn-primary" type="submit">Logout</button>
+                </form>
+            </div>
+        </header>
+
+        <div id="info-banner" class="info-banner hidden"></div>
+
+        <main class="grid gap-8 lg:grid-cols-[2fr_1fr]">
+            <section class="space-y-8">
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Live Metrics</h2>
+                        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">Updated <span id="metrics-updated">--</span></span>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <div class="metric">
+                            <p class="metric-label">Uptime</p>
+                            <p id="metric-uptime" class="metric-value">--</p>
+                        </div>
+                        <div class="metric">
+                            <p class="metric-label">Players Online</p>
+                            <p id="metric-players" class="metric-value">--</p>
+                        </div>
+                        <div class="metric">
+                            <p class="metric-label">CPU Usage</p>
+                            <p id="metric-cpu" class="metric-value">--</p>
+                        </div>
+                        <div class="metric">
+                            <p class="metric-label">Memory</p>
+                            <p id="metric-memory" class="metric-value">--</p>
+                        </div>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2">
+                        <div class="metric">
+                            <p class="metric-label">Active WebSockets</p>
+                            <p id="metric-ws" class="metric-value">--</p>
+                        </div>
+                        <div class="metric">
+                            <p class="metric-label">Broadcast avg (ms)</p>
+                            <p id="metric-broadcast" class="metric-value">--</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Recording Status</h2>
+                        <div class="flex items-center gap-2 text-sm text-slate-400">
+                            <span id="recording-id">ID: --</span>
+                            <span id="recording-entries">Entries: 0</span>
+                        </div>
+                    </div>
+                    <div class="grid gap-4 md:grid-cols-2">
+                        <div>
+                            <p class="metric-label">State</p>
+                            <p id="recording-state" class="metric-value text-lg">idle</p>
+                        </div>
+                        <div>
+                            <p class="metric-label">Last skip reason</p>
+                            <p id="recording-skip" class="text-slate-200">--</p>
+                        </div>
+                    </div>
+                    <div class="recording-controls-grid">
+                        <label class="control-field">
+                            <span>Interval (ms)</span>
+                            <input id="recording-interval" type="number" min="50" max="1000" value="100" />
+                        </label>
+                        <label class="control-field">
+                            <span>Duration (sec)</span>
+                            <input id="recording-duration" type="number" min="10" value="120" />
+                        </label>
+                        <label class="control-field">
+                            <span>Target</span>
+                            <select id="recording-target">
+                                <option value="all">All players</option>
+                                <option value="priority">Priority only</option>
+                            </select>
+                        </label>
+                        <label class="control-field">
+                            <span>Sampling Mode</span>
+                            <select id="recording-sampling">
+                                <option value="all">All</option>
+                                <option value="priority">Priority</option>
+                                <option value="round_robin">Round robin</option>
+                            </select>
+                        </label>
+                        <label class="control-field">
+                            <span>Round-robin size</span>
+                            <input id="recording-roundrobin" type="number" min="1" value="8" />
+                        </label>
+                        <label class="control-field">
+                            <span>Priority IDs (comma separated)</span>
+                            <textarea id="recording-priority" rows="1" placeholder="player-id-1, player-id-2"></textarea>
+                        </label>
+                    </div>
+                    <div class="recording-actions">
+                        <div class="flex flex-wrap gap-3">
+                            <button id="recording-start-btn" class="btn-primary" type="button">Start Recording</button>
+                            <button id="recording-stop-btn" class="btn-secondary" type="button">Stop</button>
+                            <button id="recording-refresh-btn" class="btn-tertiary" type="button">Refresh Samples</button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3">
+                            <select id="recording-export-format" class="control-select">
+                                <option value="json">Export JSON</option>
+                                <option value="csv">Export CSV</option>
+                            </select>
+                            <label class="flex items-center gap-2 text-xs text-slate-400">
+                                <input id="recording-export-compress" type="checkbox" />
+                                gzip
+                            </label>
+                            <button id="recording-export-btn" class="btn-secondary" type="button">Download</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Active Players</h2>
+                        <div class="text-sm text-slate-400">Updated <span id="players-updated">--</span></div>
+                    </div>
+                    <div class="table-scroll">
+                        <table class="min-w-full text-left text-sm">
+                            <thead class="text-xs uppercase tracking-wide text-slate-400">
+                                <tr>
+                                    <th class="py-2">Player</th>
+                                    <th class="py-2">Position</th>
+                                    <th class="py-2">RTT</th>
+                                    <th class="py-2">Last Activity</th>
+                                    <th class="py-2 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="players-table" class="divide-y divide-slate-800"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <section class="space-y-8">
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Delta/sec Inspector</h2>
+                        <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">Updated <span id="delta-updated">--</span></span>
+                    </div>
+                    <div class="mt-4 grid gap-4">
+                        <label class="control-field">
+                            <span>Player</span>
+                            <select id="delta-player-select" class="control-select">
+                                <option value="">Select a player</option>
+                            </select>
+                        </label>
+                        <div class="grid gap-4 md:grid-cols-3">
+                            <div class="metric">
+                                <p class="metric-label">Client delta/sec</p>
+                                <p id="delta-client" class="metric-value">--</p>
+                                <p id="delta-client-meta" class="text-xs text-slate-400">--</p>
+                            </div>
+                            <div class="metric">
+                                <p class="metric-label">Server delta/sec</p>
+                                <p id="delta-server" class="metric-value">--</p>
+                                <p id="delta-server-meta" class="text-xs text-slate-400">--</p>
+                            </div>
+                            <div class="metric">
+                                <p class="metric-label">Ratio (client/server)</p>
+                                <p id="delta-ratio" class="metric-value">--</p>
+                                <p id="delta-ratio-hint" class="text-xs text-slate-400">--</p>
+                            </div>
+                        </div>
+                        <div>
+                            <p class="metric-label mb-2">Rolling log</p>
+                            <div id="delta-log" class="logs-scroll space-y-2 text-xs"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Live Logs</h2>
+                        <button id="clear-logs-btn" class="btn-tertiary" type="button">Clear</button>
+                    </div>
+                    <div id="logs-list" class="logs-scroll space-y-3 text-sm"></div>
+                </div>
+
+                <div class="card">
+                    <div class="flex items-center justify-between">
+                        <h2 class="card-title">Recording Visualizer</h2>
+                        <span id="recording-entries-count" class="text-xs text-slate-400">0 samples</span>
+                    </div>
+                    <div class="visualizer-wrapper">
+                        <canvas id="recording-canvas" width="640" height="360"></canvas>
+                        <div id="recording-empty" class="visualizer-empty hidden">No samples yet. Start a recording to visualize movement trails.</div>
+                    </div>
+                    <div class="timeline-controls">
+                        <label class="flex flex-1 flex-col text-xs text-slate-400">
+                            <span>Timeline</span>
+                            <input id="recording-slider" type="range" min="0" max="0" value="0" />
+                        </label>
+                        <span id="recording-slider-label" class="text-xs text-slate-300 w-28 text-right">--</span>
+                    </div>
+                    <p class="text-xs text-slate-500">Scrub through captured samples to inspect player trails. Trails are scaled relative to recorded bounds.</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script type="module" src="/static/admin/js/dashboard.js"></script>
+</body>
+</html>
